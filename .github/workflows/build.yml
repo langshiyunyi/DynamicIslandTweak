@@ -2,27 +2,12 @@ name: Build
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - '**.md'
   pull_request:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      scheme:
-        description: '构建方案'
-        type: choice
-        options:
-          - rootless
-          - roothide
-          - both
-        default: both
-
-concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   build:
     uses: langshiyunyi/theos-build/.github/workflows/build.yml@v1
     with:
-      scheme: ${{ github.event.inputs.scheme || 'both' }}
+      scheme: both
