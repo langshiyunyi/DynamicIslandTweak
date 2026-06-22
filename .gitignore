@@ -1,0 +1,21 @@
+# Theos 构建产物
+.theos/
+packages/
+obj/
+build/
+
+# 子项目构建产物
+dynamicislandprefs/.theos/
+
+# 打包产物
+*.deb
+*.ipa
+*.dSYM
+
+# 编辑器/系统文件
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.idea/

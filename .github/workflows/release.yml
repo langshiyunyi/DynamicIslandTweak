@@ -1,0 +1,16 @@
+name: Release
+on:
+  push:
+    tags:
+      - 'v*'
+      - 'v*-rc*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: langshiyunyi/theos-build/.github/workflows/release.yml@v1
+    secrets: inherit
+    with:
+      scheme: both
