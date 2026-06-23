@@ -444,8 +444,58 @@ static void extractNotificationContent(NCNotificationRequest *request, NSString 
     if (bundleIDOut) *bundleIDOut = bundleID;
 }
 
+// 向上查找真正的横幅容器视图（如 SBUserNotificationBanner）
+// 可见横幅是该容器，而非 NCNotificationShortLookViewController.view 本身，
+// 因此只隐藏 VC 视图无效，必须隐藏其 banner 祖先视图
+static UIView *di_findBannerAncestor(UIView *view) {
+    UIView *v = view.superview;
+    while (v) {
+        NSString *cls = NSStringFromClass([v class]);
+        NSRange r = [cls rangeOfString:@"Banner" options:NSCaseInsensitiveSearch];
+        if (r.location != NSNotFound) return v;
+        if ([cls containsString:@"NotificationList"] || [cls containsString:@"CoverSheet"] || [cls containsString:@"LockScreen"]) return nil;
+        v = v.superview;
+    }
+    return nil;
+}
+
+// 隐藏系统横幅：隐藏 banner 容器 + VC 视图，保留 NC 状态机
+static void di_hideSystemBanner(UIViewController *vc) {
+    UIView *banner = di_findBannerAncestor(vc.view);
+    if (banner) {
+        banner.hidden = YES;
+        banner.alpha = 0;
+    }
+    vc.view.hidden = YES;
+    vc.view.alpha = 0;
+    vc.view.userInteractionEnabled = NO;
+}
+
+// 恢复系统横幅可见性（VC 会被通知中心列表复用，必须恢复）
+static void di_restoreSystemBanner(UIViewController *vc) {
+    UIView *banner = di_findBannerAncestor(vc.view);
+    if (banner) {
+        banner.hidden = NO;
+        banner.alpha = 1;
+    }
+    vc.view.hidden = NO;
+    vc.view.alpha = 1;
+    vc.view.userInteractionEnabled = YES;
+}
+
 %group NotificationHooks
 %hook NCNotificationShortLookViewController
+
+- (void)viewWillAppear:(BOOL)animated {
+    // 在系统横幅 present 动画开始前隐藏，避免出现“一闪而过”的横幅
+    if (tweakEnabledFromPrefs()) {
+        DIDisplayManager *manager = [DIDisplayManager sharedInstance];
+        if (manager.bannerEnabled && isVCInBannerContext(self)) {
+            di_hideSystemBanner(self);
+        }
+    }
+    %orig;
+}
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
@@ -454,10 +504,8 @@ static void extractNotificationContent(NCNotificationRequest *request, NSString 
     DIDisplayManager *manager = [DIDisplayManager sharedInstance];
     if (!manager.bannerEnabled || !isVCInBannerContext(self)) return;
 
-    // 隐藏系统横幅视图，保留 NC 状态机（%orig 已执行）
-    // 避免与通知岛同时出现造成“双横幅”
-    self.view.alpha = 0;
-    self.view.userInteractionEnabled = NO;
+    // 持续保持隐藏（防止 present 动画把 alpha/hidden 复位）
+    di_hideSystemBanner(self);
 
     NCNotificationRequest *request = nil;
     @try {
@@ -479,9 +527,8 @@ static void extractNotificationContent(NCNotificationRequest *request, NSString 
     if (!tweakEnabledFromPrefs()) return;
     DIDisplayManager *manager = [DIDisplayManager sharedInstance];
     if (!manager.bannerEnabled || !isVCInBannerContext(self)) return;
-    // 防御性恢复 alpha（视图已消失，下次复用时不透明）
-    self.view.alpha = 1;
-    self.view.userInteractionEnabled = YES;
+    // 恢复可见性，便于 VC/容器复用
+    di_restoreSystemBanner(self);
     [manager cancelDelayedHide];
     manager.delayedHideTimer = [NSTimer scheduledTimerWithTimeInterval:0.6 target:manager selector:@selector(hideNotification) userInfo:nil repeats:NO];
 }
