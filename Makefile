@@ -14,9 +14,3 @@ DynamicIslandTweak_FRAMEWORKS = UIKit CoreGraphics QuartzCore
 LOGOS_DEFAULT_GENERATOR = internal
 
 include $(THEOS_MAKE_PATH)/tweak.mk
-
-
-ifeq ($(THEOS_PACKAGE_SCHEME),roothide)
-before-package::
-	$(ECHO_NOTHING)python3 -c "from pathlib import Path; p=Path('$(THEOS_STAGING_DIR)/DEBIAN/control'); s=p.read_text(); s=s.replace(', oldabi', '').replace('oldabi, ', '').replace('Depends: oldabi\n', ''); p.write_text(s)"$(ECHO_END)
-endif

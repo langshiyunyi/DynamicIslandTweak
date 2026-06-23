@@ -47,7 +47,7 @@ typedef NS_ENUM(NSInteger, DIContentType) {
 - (void)updatePlaybackState:(BOOL)playing;
 - (void)updateTitleDisplay;
 - (void)updateArtwork:(UIImage *)image;
-- (void)updateElapsed:(NSTimeInterval)elapsed duration:(NSTimeInterval)duration;
+- (void)updateElapsed:(NSTimeInterval)elapsed duration:(NSTimeInterval)duration playbackRate:(double)playbackRate;
 - (void)reloadPrefs;
 
 // 通知显示

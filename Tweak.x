@@ -9,23 +9,10 @@
 // C 层日志：不依赖 Foundation，dyld 阶段也可用
 #define DIRawLog(fmt, ...) syslog(LOG_NOTICE, "[DynamicIslandTweak] " fmt, ##__VA_ARGS__)
 
-// 文件日志宏：同时写 /tmp/DynamicIslandTweak.log、syslog 和 NSLog，便于崩溃后定位
+// 统一日志宏：syslog + NSLog，无文件写入（避免每条日志开关句柄的 IO 开销，且 /tmp 路径不符合 roothide 规范）
 #define DILog(fmt, ...) do { \
-    DIRawLog("%s", [[NSString stringWithFormat:fmt, ##__VA_ARGS__] UTF8String]); \
-    NSString *_diMsg = [NSString stringWithFormat:fmt, ##__VA_ARGS__]; \
-    NSString *_diLine = [NSString stringWithFormat:@"[%@] %@\n", [NSDate date], _diMsg]; \
-    @try { \
-        NSString *_diPath = @"/tmp/DynamicIslandTweak.log"; \
-        if (![[NSFileManager defaultManager] fileExistsAtPath:_diPath]) \
-            [[NSData data] writeToFile:_diPath atomically:YES]; \
-        NSFileHandle *_diH = [NSFileHandle fileHandleForWritingAtPath:_diPath]; \
-        if (_diH) { \
-            [_diH seekToEndOfFile]; \
-            [_diH writeData:[_diLine dataUsingEncoding:NSUTF8StringEncoding]]; \
-            [_diH closeFile]; \
-        } \
-    } @catch (NSException *e) {} \
-    NSLog(@"[Tweak] %@", _diMsg); \
+    syslog(LOG_NOTICE, "[DynamicIslandTweak] " fmt, ##__VA_ARGS__); \
+    NSLog(@"[Tweak] %@", [NSString stringWithFormat:fmt, ##__VA_ARGS__]); \
 } while(0)
 
 typedef void (^MRMediaRemoteGetNowPlayingInfoCompletion)(CFDictionaryRef info);
@@ -158,7 +145,7 @@ static void updateSyncTimer(BOOL playing) {
     }
     if (playing) {
         if (!_syncTimer) {
-            _syncTimer = [NSTimer scheduledTimerWithTimeInterval:3.0 repeats:YES block:^(__unused NSTimer *timer) {
+            _syncTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(__unused NSTimer *timer) {
                 syncTick();
             }];
         }
@@ -239,16 +226,19 @@ static void fetchNowPlayingInfo(void) {
         __block NSString *bundleID = safeString(dictionaryValue(dict, _kInfoBundleID));
         NSTimeInterval elapsed = 0;
         NSTimeInterval duration = 0;
+        double playbackRate = 1.0;
         NSNumber *elapsedNumber = dictionaryValue(dict, _kInfoElapsedTime);
         NSNumber *durationNumber = dictionaryValue(dict, _kInfoDuration);
+        NSNumber *rateNumber = dictionaryValue(dict, _kInfoPlaybackRate);
         if ([elapsedNumber isKindOfClass:[NSNumber class]]) elapsed = elapsedNumber.doubleValue;
         if ([durationNumber isKindOfClass:[NSNumber class]]) duration = durationNumber.doubleValue;
+        if ([rateNumber isKindOfClass:[NSNumber class]]) playbackRate = rateNumber.doubleValue > 0 ? rateNumber.doubleValue : 1.0;
 
         void (^deliver)(NSString *) = ^(NSString *resolvedBundleID) {
             if (title.length > 0 || artist.length > 0) {
                 DIDisplayManager *manager = [DIDisplayManager sharedInstance];
                 [manager showMediaWithTitle:title artist:artist playing:playing artwork:artwork bundleID:resolvedBundleID];
-                [manager updateElapsed:elapsed duration:duration];
+                [manager updateElapsed:elapsed duration:duration playbackRate:playbackRate];
             }
             updateSyncTimer(playing);
         };
@@ -277,11 +267,14 @@ static void syncTick(void) {
 
         NSTimeInterval elapsed = 0;
         NSTimeInterval duration = 0;
+        double playbackRate = 1.0;
         NSNumber *elapsedNumber = dictionaryValue(dict, _kInfoElapsedTime);
         NSNumber *durationNumber = dictionaryValue(dict, _kInfoDuration);
+        NSNumber *rateNumber = dictionaryValue(dict, _kInfoPlaybackRate);
         if ([elapsedNumber isKindOfClass:[NSNumber class]]) elapsed = elapsedNumber.doubleValue;
         if ([durationNumber isKindOfClass:[NSNumber class]]) duration = durationNumber.doubleValue;
-        [[DIDisplayManager sharedInstance] updateElapsed:elapsed duration:duration];
+        if ([rateNumber isKindOfClass:[NSNumber class]]) playbackRate = rateNumber.doubleValue > 0 ? rateNumber.doubleValue : 1.0;
+        [[DIDisplayManager sharedInstance] updateElapsed:elapsed duration:duration playbackRate:playbackRate];
     });
 }
 
@@ -459,6 +452,11 @@ static void extractNotificationContent(NCNotificationRequest *request, NSString 
     DIDisplayManager *manager = [DIDisplayManager sharedInstance];
     if (!manager.bannerEnabled || !isVCInBannerContext(self)) return;
 
+    // 隐藏系统横幅视图，保留 NC 状态机（%orig 已执行）
+    // 避免与通知岛同时出现造成“双横幅”
+    self.view.alpha = 0;
+    self.view.userInteractionEnabled = NO;
+
     NCNotificationRequest *request = nil;
     @try {
         request = [self respondsToSelector:@selector(notificationRequest)] ? [self notificationRequest] : nil;
@@ -479,6 +477,9 @@ static void extractNotificationContent(NCNotificationRequest *request, NSString 
     if (!tweakEnabledFromPrefs()) return;
     DIDisplayManager *manager = [DIDisplayManager sharedInstance];
     if (!manager.bannerEnabled || !isVCInBannerContext(self)) return;
+    // 防御性恢复 alpha（视图已消失，下次复用时不透明）
+    self.view.alpha = 1;
+    self.view.userInteractionEnabled = YES;
     [manager cancelDelayedHide];
     manager.delayedHideTimer = [NSTimer scheduledTimerWithTimeInterval:0.6 target:manager selector:@selector(hideNotification) userInfo:nil repeats:NO];
 }

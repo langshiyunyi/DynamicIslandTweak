@@ -5,9 +5,6 @@
 
 // 通知灵动岛偏好
 @property (nonatomic, assign, readonly) BOOL bannerEnabled;
-@property (nonatomic, assign, readonly) CGFloat bannerCornerRadius;
-@property (nonatomic, assign, readonly) CGFloat bannerDamping;
-@property (nonatomic, assign, readonly) CGFloat bannerInitialScale;
 @property (nonatomic, assign, readonly) CGFloat notifDuration;
 
 // 双圆角
@@ -27,7 +24,7 @@
 - (void)setup;
 - (void)showMediaWithTitle:(NSString *)title artist:(NSString *)artist playing:(BOOL)playing artwork:(UIImage *)artwork bundleID:(NSString *)bundleID;
 - (void)updateMediaArtwork:(UIImage *)artwork;
-- (void)updateElapsed:(NSTimeInterval)elapsed duration:(NSTimeInterval)duration;
+- (void)updateElapsed:(NSTimeInterval)elapsed duration:(NSTimeInterval)duration playbackRate:(double)playbackRate;
 - (void)reloadPrefs;
 
 // 通知整合接口

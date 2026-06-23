@@ -34,6 +34,8 @@
 }
 
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    // hitTest 必须在主线程调用，避免多线程并发访问 contentView 状态
+    if (![NSThread isMainThread]) return nil;
     if (self.contentView.state == DIStateHidden || self.contentView.alpha < 0.1) {
         return nil;
     }

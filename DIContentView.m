@@ -49,6 +49,9 @@ static CGFloat _prefBorderB = 1.0;
 @property (nonatomic, assign) NSTimeInterval trackDuration;
 @property (nonatomic, assign) NSTimeInterval trackElapsed;
 @property (nonatomic, assign) BOOL isSeeking;
+// 计算式真实进度：playbackRate 用于变速播放校准，lastSyncTime 记录最近一次与系统同步的时刻
+@property (nonatomic, assign) double playbackRate;
+@property (nonatomic, assign) CFTimeInterval lastSyncTime;
 @property (nonatomic, strong) CADisplayLink *progressLink;
 @property (nonatomic, strong) UIImpactFeedbackGenerator *feedbackGenerator;
 // 通知视图组件
@@ -719,10 +722,21 @@ static CGFloat _prefBorderB = 1.0;
     }
 }
 
-- (void)updateElapsed:(NSTimeInterval)elapsed duration:(NSTimeInterval)duration {
+- (void)updateElapsed:(NSTimeInterval)elapsed duration:(NSTimeInterval)duration playbackRate:(double)playbackRate {
     BOOL newTrack = (fabs(duration - self.trackDuration) > 1.0);
     self.trackDuration = duration;
-    if (newTrack || self.trackElapsed == 0) self.trackElapsed = elapsed;
+    self.playbackRate = playbackRate > 0 ? playbackRate : 1.0;
+    // 非 seeking 时无条件用系统真实值覆盖，避免本地漂移累积
+    if (!self.isSeeking) {
+        self.trackElapsed = elapsed;
+        self.lastSyncTime = CACurrentMediaTime();
+    }
+    // 新曲目重置进度条位置
+    if (newTrack) {
+        self.progressSlider.value = (duration > 0) ? (float)(elapsed / duration) : 0;
+        self.elapsedLabel.text = [self formatTime:elapsed];
+        self.remainingLabel.text = [NSString stringWithFormat:@"-%@", [self formatTime:duration - elapsed]];
+    }
     if (!self.isSeeking && duration > 0 && self.isPlaying) [self startProgressLink];
 }
 
@@ -741,7 +755,16 @@ static CGFloat _prefBorderB = 1.0;
 - (void)progressStep {
     if (self.isSeeking || self.trackDuration <= 0) return;
     if (!self.isPlaying) { [self stopProgressLink]; return; }
-    self.trackElapsed += 1.0;
+    // 计算式推进：基于真实同步时刻 + playbackRate，变速播放也能正确推进
+    CFTimeInterval now = CACurrentMediaTime();
+    if (self.lastSyncTime <= 0) {
+        // 首次 tick（updateElapsed 尚未调用过）：仅校准基准时刻，不推进
+        self.lastSyncTime = now;
+        return;
+    }
+    CFTimeInterval delta = now - self.lastSyncTime;
+    self.lastSyncTime = now;
+    self.trackElapsed += delta * self.playbackRate;
     if (self.trackElapsed >= self.trackDuration) {
         self.trackElapsed = self.trackDuration;
         [self stopProgressLink];
@@ -1009,6 +1032,9 @@ static CGFloat _prefBorderB = 1.0;
 
 - (void)hideNotification {
     [self stopNotifMarquee];
+    // 防御性：确保通知显示期间可能残留的动画 link 被清理
+    [self stopProgressLink];
+    [self stopWaveAnimation];
     self.notifExpanded = NO;
     [UIView animateWithDuration:0.25 animations:^{
         self.alpha = 0.0;
@@ -1025,6 +1051,8 @@ static CGFloat _prefBorderB = 1.0;
 
 - (void)hideNotificationImmediate {
     [self stopNotifMarquee];
+    [self stopProgressLink];
+    [self stopWaveAnimation];
     self.notifExpanded = NO;
     // 立即清空通知容器，避免和音乐岛重叠
     self.notificationContainer.hidden = YES;

@@ -11,13 +11,6 @@ typedef void (*MRMediaRemoteSetElapsedTime_t)(double elapsedTime);
 static MRMediaRemoteSendCommand_t _MRSendCommand = NULL;
 static MRMediaRemoteSetElapsedTime_t _MRSetElapsedTime = NULL;
 
-// LSApplicationWorkspace 用于跳转 App
-@interface LSApplicationWorkspace : NSObject
-+ (instancetype)defaultWorkspace;
-- (BOOL)openApplicationWithBundleID:(NSString *)bundleID;
-- (BOOL)openApplicationWithBundleID:(NSString *)bundleID configuration:(id)cfg;
-@end
-
 // FBSSystemService — SpringBoard 内激活 App 的标准私有路径
 // /System/Library/PrivateFrameworks/FrontBoardServices.framework
 @interface FBSSystemService : NSObject
@@ -57,9 +50,6 @@ static void loadMediaRemoteCommandsIfNeeded(void) {
 @property (nonatomic, assign, readwrite) BOOL showingNotification;
 // 通知灵动岛
 @property (nonatomic, assign, readwrite) BOOL bannerEnabled;
-@property (nonatomic, assign, readwrite) CGFloat bannerCornerRadius;
-@property (nonatomic, assign, readwrite) CGFloat bannerDamping;
-@property (nonatomic, assign, readwrite) CGFloat bannerInitialScale;
 @property (nonatomic, assign, readwrite) CGFloat notifDuration;
 // 双圆角
 @property (nonatomic, assign, readwrite) CGFloat mediaCornerRadius;
@@ -101,9 +91,6 @@ static void loadMediaRemoteCommandsIfNeeded(void) {
     self.reappearDelay = [prefs objectForKey:@"reappearDelay"] ? [prefs floatForKey:@"reappearDelay"] : 1.0;
     // 通知灵动岛偏好
     self.bannerEnabled = [prefs objectForKey:@"notificationEnabled"] ? [prefs boolForKey:@"notificationEnabled"] : NO;
-    self.bannerCornerRadius = [prefs objectForKey:@"bannerCornerRadius"] ? [prefs floatForKey:@"bannerCornerRadius"] : 22.0;
-    self.bannerDamping = [prefs objectForKey:@"bannerDamping"] ? [prefs floatForKey:@"bannerDamping"] : 0.7;
-    self.bannerInitialScale = [prefs objectForKey:@"bannerInitialScale"] ? [prefs floatForKey:@"bannerInitialScale"] : 0.8;
     self.notifDuration = [prefs objectForKey:@"notifDuration"] ? [prefs floatForKey:@"notifDuration"] : 3.0;
     if (self.notifDuration < 1.0) self.notifDuration = 1.0;
     if (self.notifDuration > 30.0) self.notifDuration = 30.0;
@@ -115,6 +102,8 @@ static void loadMediaRemoteCommandsIfNeeded(void) {
         self.reappearTimer = nil;
         [self.notificationTimer invalidate];
         self.notificationTimer = nil;
+        [self.delayedHideTimer invalidate];
+        self.delayedHideTimer = nil;
         [self.overlayWindow.contentView hide];
         [self.overlayWindow hide];
     }
@@ -321,12 +310,12 @@ static void loadMediaRemoteCommandsIfNeeded(void) {
     }
 }
 
-- (void)updateElapsed:(NSTimeInterval)elapsed duration:(NSTimeInterval)duration {
+- (void)updateElapsed:(NSTimeInterval)elapsed duration:(NSTimeInterval)duration playbackRate:(double)playbackRate {
     dispatch_async(dispatch_get_main_queue(), ^{
         // 通知岛显示时不更新音乐进度 UI
         if (self.showingNotification) return;
         if (!self.overlayWindow) return;
-        [self.overlayWindow.contentView updateElapsed:elapsed duration:duration];
+        [self.overlayWindow.contentView updateElapsed:elapsed duration:duration playbackRate:playbackRate];
     });
 }
 
