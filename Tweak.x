@@ -10,9 +10,11 @@
 #define DIRawLog(fmt, ...) syslog(LOG_NOTICE, "[DynamicIslandTweak] " fmt, ##__VA_ARGS__)
 
 // 统一日志宏：syslog + NSLog，无文件写入（避免每条日志开关句柄的 IO 开销，且 /tmp 路径不符合 roothide 规范）
+// 注意：fmt 必须是 NSString 字面量（@"..."），用 %s + UTF8String 避免 "C串" @"NSString" 非法拼接
 #define DILog(fmt, ...) do { \
-    syslog(LOG_NOTICE, "[DynamicIslandTweak] " fmt, ##__VA_ARGS__); \
-    NSLog(@"[Tweak] %@", [NSString stringWithFormat:fmt, ##__VA_ARGS__]); \
+    NSString *_diMsg = [NSString stringWithFormat:fmt, ##__VA_ARGS__]; \
+    syslog(LOG_NOTICE, "[DynamicIslandTweak] %s", [_diMsg UTF8String]); \
+    NSLog(@"[Tweak] %@", _diMsg); \
 } while(0)
 
 typedef void (^MRMediaRemoteGetNowPlayingInfoCompletion)(CFDictionaryRef info);
