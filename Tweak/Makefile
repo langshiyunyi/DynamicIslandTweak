@@ -1,3 +1,6 @@
+THEOS ?= /var/jb/var/mobile/theos
+include $(THEOS)/makefiles/common.mk
+
 TWEAK_NAME = DynamicIslandTweak
 DynamicIslandTweak_FILES = Tweak.x DIContentView.m DIWindow.m DIDisplayManager.m DILocalization.m
 DynamicIslandTweak_CFLAGS = -fobjc-arc
