@@ -1,6 +1,3 @@
-THEOS ?= /var/jb/var/mobile/theos
-include $(THEOS)/makefiles/common.mk
-
 BUNDLE_NAME = DynamicIslandPrefs
 DynamicIslandPrefs_FILES = DIRootListController.m
 DynamicIslandPrefs_CFLAGS = -fobjc-arc
