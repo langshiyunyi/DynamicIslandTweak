@@ -1,16 +1,83 @@
 name: Release
+
 on:
   push:
     tags:
       - 'v*'
       - 'v*-rc*'
+  workflow_dispatch:
+    inputs:
+      tag-name:
+        description: 'Release tag 名（必填）'
+        type: string
+        required: true
+        default: v0.0.0-test
+      scheme:
+        description: '构建方案'
+        type: choice
+        options:
+          - rootless
+          - roothide
+          - both
+        default: both
+      prerelease:
+        description: '是否预发布'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 jobs:
-  release:
-    uses: langshiyunyi/theos-build/.github/workflows/release.yml@v1
-    secrets: inherit
+  build:
+    name: 构建产物
+    uses: ./.github/workflows/build.yml
     with:
-      scheme: both
+      scheme: ${{ inputs.scheme || 'both' }}
+      sdk-version: ''
+      theos-ref: master
+      artifact-retention: 7
+
+  release:
+    name: 发布 Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下载所有 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: download
+          merge-multiple: false
+
+      - name: 整理产物
+        run: |
+          mkdir -p release
+          find download -name "*.deb" -exec cp {} release/ \;
+          echo "## 构建产物" >> $GITHUB_STEP_SUMMARY
+          for f in release/*.deb; do
+            name=$(basename "$f")
+            size=$(du -h "$f" | cut -f1)
+            echo "- \`$name\` ($size)" >> $GITHUB_STEP_SUMMARY
+          done
+          ls -la release/
+
+      - name: 计算 tag 名
+        id: tag
+        run: |
+          input_tag="${{ inputs.tag-name }}"
+          ref_tag="${{ github.ref_name }}"
+          tag="${input_tag:-$ref_tag}"
+          if [ -z "$tag" ] || [ "$tag" = "github.ref_name" ]; then
+            echo "::error::无法确定 Release tag（既无输入 tag 也非 tag 触发）"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          prerelease: ${{ inputs.prerelease || false }}
+          files: release/*.deb

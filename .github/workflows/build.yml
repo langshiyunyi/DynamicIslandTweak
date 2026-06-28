@@ -1,13 +1,193 @@
 name: Build
+
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      scheme:
+        description: '构建方案'
+        type: choice
+        options:
+          - rootless
+          - roothide
+          - both
+        default: both
+      sdk-version:
+        description: 'iOS SDK 版本（留空自动）'
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      scheme:
+        description: '构建方案：rootless / roothide / both'
+        type: string
+        default: both
+      sdk-version:
+        description: 'iOS SDK 版本（如 16.5；留空自动选择）'
+        type: string
+        default: ''
+      make-target:
+        description: 'make 目标（默认 package）'
+        type: string
+        default: package
+      extra-make-flags:
+        description: '额外 make 参数'
+        type: string
+        default: ''
+      artifact-retention:
+        description: 'artifact 保留天数'
+        type: number
+        default: 30
+      theos-ref:
+        description: 'Theos 仓库引用（分支/tag/commit）'
+        type: string
+        default: master
+
+env:
+  THEOS_LANGUAGE: english
 
 jobs:
+  prepare:
+    name: 准备
+    runs-on: macos-latest
+    outputs:
+      schemes: ${{ steps.set.outputs.schemes }}
+      pkg-name: ${{ steps.set.outputs.pkg-name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 读取包名
+        id: set
+        run: |
+          input="${{ inputs.scheme || 'both' }}"
+          if [ "$input" = "both" ]; then
+            echo 'schemes=["rootless","roothide"]' >> "$GITHUB_OUTPUT"
+          else
+            echo "schemes=[\"$input\"]" >> "$GITHUB_OUTPUT"
+          fi
+          pkg=""
+          if [ -f control ]; then
+            pkg=$(grep -m1 '^Package:' control | awk '{print $2}')
+          fi
+          pkg=${pkg:-theos-package}
+          echo "pkg-name=$pkg" >> "$GITHUB_OUTPUT"
+          echo "检测到包名: $pkg"
+
   build:
-    uses: langshiyunyi/theos-build/.github/workflows/build.yml@v1
-    with:
-      scheme: both
+    name: 构建 (${{ matrix.scheme }})
+    needs: prepare
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        scheme: ${{ fromJson(needs.prepare.outputs.schemes) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 缓存 Theos
+        uses: actions/cache@v4
+        with:
+          path: ~/theos
+          key: theos-macos-${{ inputs.theos-ref || 'master' }}-v2
+
+      - name: Setup Theos
+        env:
+          THEOS_REF: ${{ inputs.theos-ref || 'master' }}
+        run: |
+          set -x
+          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
+          if [ ! -d "$HOME/theos/.git" ]; then
+            # roothide/theos 兼容官方 theos，且支持 roothide scheme
+            git clone --recursive --depth 1 --branch "$THEOS_REF" \
+              https://github.com/roothide/theos.git "$HOME/theos" || \
+            git clone --recursive --depth 1 https://github.com/roothide/theos.git "$HOME/theos"
+          fi
+          # ldid：Theos 签名必需，macOS runner 用 brew 装
+          brew install ldid 2>/dev/null || true
+          ldid -V 2>/dev/null || true
+
+      - name: 安装 iOS SDK
+        env:
+          SDK_INPUT: ${{ inputs.sdk-version }}
+        run: |
+          set -x
+          mkdir -p "$HOME/theos/sdks"
+          cd "$HOME/theos/sdks"
+          # 指定版本优先
+          if [ -n "$SDK_INPUT" ] && [ ! -d "iPhoneOS${SDK_INPUT}.sdk" ]; then
+            for url in \
+              "https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS${SDK_INPUT}.sdk.tar.xz" \
+              "https://github.com/theos/sdks/raw/master/iPhoneOS${SDK_INPUT}.sdk.tar.xz"; do
+              if curl -fsSL "$url" -o /tmp/sdk.tar.xz; then
+                tar -xf /tmp/sdk.tar.xz && rm -f /tmp/sdk.tar.xz
+                break
+              fi
+            done
+          fi
+          # 自动选择（16.5 → 15.2 → 14.5）
+          if [ -z "$(ls -d iPhoneOS*.sdk 2>/dev/null)" ]; then
+            for sdk in 16.5 15.2 14.5; do
+              for url in \
+                "https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS${sdk}.sdk.tar.xz" \
+                "https://github.com/theos/sdks/raw/master/iPhoneOS${sdk}.sdk.tar.xz"; do
+                if curl -fsSL "$url" -o /tmp/sdk.tar.xz; then
+                  tar -xf /tmp/sdk.tar.xz && rm -f /tmp/sdk.tar.xz
+                  break 2
+                fi
+              done
+            done
+          fi
+          installed=$(ls -1d iPhoneOS*.sdk 2>/dev/null | head -1)
+          if [ -z "$installed" ]; then
+            echo "::error::无法安装 iOS SDK"
+            exit 1
+          fi
+          echo "已安装 SDK: $installed"
+
+      - name: 构建 deb
+        env:
+          PKG_NAME: ${{ needs.prepare.outputs.pkg-name }}
+          EXTRA_FLAGS: ${{ inputs.extra-make-flags }}
+        run: |
+          set -x
+          echo "::group::make clean"
+          make clean THEOS="$HOME/theos" || true
+          echo "::endgroup::"
+          echo "::group::make ${{ inputs.make-target || 'package' }}"
+          make ${{ inputs.make-target || 'package' }} \
+            THEOS="$HOME/theos" \
+            THEOS_PACKAGE_SCHEME=${{ matrix.scheme }} \
+            $EXTRA_FLAGS
+          echo "::endgroup::"
+
+      - name: 收集产物
+        env:
+          PKG_NAME: ${{ needs.prepare.outputs.pkg-name }}
+        run: |
+          set -x
+          mkdir -p artifacts
+          find packages -name "*.deb" -print -exec cp {} artifacts/ \;
+          if [ -z "$(ls -A artifacts 2>/dev/null)" ]; then
+            echo "::error::未找到 .deb 产物"
+            exit 1
+          fi
+          echo "## 产物清单" >> $GITHUB_STEP_SUMMARY
+          for f in artifacts/*.deb; do
+            name=$(basename "$f")
+            size=$(du -h "$f" | cut -f1)
+            echo "- \`$name\` ($size)" >> $GITHUB_STEP_SUMMARY
+          done
+          ls -la artifacts/
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.pkg-name }}-${{ matrix.scheme }}
+          path: artifacts/*.deb
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact-retention || 30 }}
