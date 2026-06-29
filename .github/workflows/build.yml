@@ -111,25 +111,37 @@ jobs:
           brew install ldid 2>/dev/null || true
           ldid -V 2>/dev/null || true
 
+      # 修改点：使用 update-theos-sdks 并保留手动备用
       - name: 安装 iOS SDK
+        id: sdk
         env:
           SDK_INPUT: ${{ inputs.sdk-version }}
         run: |
           set -x
           mkdir -p "$HOME/theos/sdks"
           cd "$HOME/theos/sdks"
-          # 指定版本优先
+          
+          # 如果指定了版本且不存在，尝试下载
           if [ -n "$SDK_INPUT" ] && [ ! -d "iPhoneOS${SDK_INPUT}.sdk" ]; then
+            echo "尝试下载指定 SDK ${SDK_INPUT}..."
             for url in \
               "https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS${SDK_INPUT}.sdk.tar.xz" \
               "https://github.com/theos/sdks/raw/master/iPhoneOS${SDK_INPUT}.sdk.tar.xz"; do
               if curl -fsSL "$url" -o /tmp/sdk.tar.xz; then
                 tar -xf /tmp/sdk.tar.xz && rm -f /tmp/sdk.tar.xz
+                echo "成功下载 SDK ${SDK_INPUT}"
                 break
               fi
             done
           fi
-          # 自动选择（16.5 → 15.2 → 14.5）
+          
+          # 如果没有任何 SDK，则使用 update-theos-sdks 自动安装（推荐）
+          if [ -z "$(ls -d iPhoneOS*.sdk 2>/dev/null)" ]; then
+            echo "未发现 SDK，使用 update-theos-sdks 自动安装..."
+            "$HOME/theos/bin/update-theos-sdks"
+          fi
+          
+          # 如果还是没有，手动尝试几个常用版本
           if [ -z "$(ls -d iPhoneOS*.sdk 2>/dev/null)" ]; then
             for sdk in 16.5 15.2 14.5; do
               for url in \
@@ -137,17 +149,33 @@ jobs:
                 "https://github.com/theos/sdks/raw/master/iPhoneOS${sdk}.sdk.tar.xz"; do
                 if curl -fsSL "$url" -o /tmp/sdk.tar.xz; then
                   tar -xf /tmp/sdk.tar.xz && rm -f /tmp/sdk.tar.xz
+                  echo "成功下载 SDK ${sdk}"
                   break 2
                 fi
               done
             done
           fi
+          
           installed=$(ls -1d iPhoneOS*.sdk 2>/dev/null | head -1)
           if [ -z "$installed" ]; then
-            echo "::error::无法安装 iOS SDK"
+            echo "::error::无法安装任何 iOS SDK"
             exit 1
           fi
-          echo "已安装 SDK: $installed"
+          
+          # 设置环境变量供后续步骤使用
+          SDK_PATH="$HOME/theos/sdks/$installed"
+          echo "THEOS_SDK_PATH=$SDK_PATH" >> "$GITHUB_ENV"
+          echo "SDK_PATH=$SDK_PATH" >> "$GITHUB_OUTPUT"
+          echo "已安装 SDK: $installed (路径: $SDK_PATH)"
+          
+          # 验证 Preferences.framework 是否存在
+          if [ ! -d "$SDK_PATH/System/Library/Frameworks/Preferences.framework" ]; then
+            echo "::error::在 SDK 中未找到 Preferences.framework，请检查 SDK 完整性"
+            ls -la "$SDK_PATH/System/Library/Frameworks/" || true
+            exit 1
+          else
+            echo "Preferences.framework 存在"
+          fi
 
       - name: 构建 deb
         env:
@@ -157,18 +185,23 @@ jobs:
           set -x
           echo "make version: $(make --version | head -1)"
           echo "shell: $0 / SHELL=$SHELL"
+          echo "SDKROOT: ${{ env.THEOS_SDK_PATH }}"
+          
           echo "::group::make clean"
           make clean THEOS="$HOME/theos" || true
           echo "::endgroup::"
+          
           echo "::group::make ${{ inputs.make-target || 'package' }}"
           set +e
           make ${{ inputs.make-target || 'package' }} \
             THEOS="$HOME/theos" \
             THEOS_PACKAGE_SCHEME=${{ matrix.scheme }} \
+            THEOS_SDK_PATH="${{ env.THEOS_SDK_PATH }}" \
             $EXTRA_FLAGS 2>&1 | tee /tmp/build_output.log
           _status=${PIPESTATUS[0]}
           set -e
           echo "::endgroup::"
+          
           if [ "$_status" -ne 0 ]; then
             echo "::error::make 失败，退出码 $_status"
             grep -iE "error|fail|no such|not found|make\[|cannot|undefined|missing|fatal|recipe|stop|mismatch|version|No rule" /tmp/build_output.log | tail -25 | while IFS= read -r line; do
