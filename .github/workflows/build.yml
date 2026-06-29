@@ -16,9 +16,9 @@ on:
           - both
         default: both
       sdk-version:
-        description: 'iOS SDK 版本（留空自动）'
+        description: 'iOS SDK 版本（推荐 14.5，因为包含 Preferences 私有框架）'
         type: string
-        default: ''
+        default: '14.5'          # 默认使用 14.5，确保 Preferences.framework 存在
   workflow_call:
     inputs:
       scheme:
@@ -26,9 +26,9 @@ on:
         type: string
         default: both
       sdk-version:
-        description: 'iOS SDK 版本（如 16.5；留空自动选择）'
+        description: 'iOS SDK 版本（推荐 14.5）'
         type: string
-        default: ''
+        default: '14.5'
       make-target:
         description: 'make 目标（默认 package）'
         type: string
@@ -102,79 +102,84 @@ jobs:
           set -x
           echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
           if [ ! -d "$HOME/theos/.git" ]; then
-            # roothide/theos 兼容官方 theos，且支持 roothide scheme
             git clone --recursive --depth 1 --branch "$THEOS_REF" \
               https://github.com/roothide/theos.git "$HOME/theos" || \
             git clone --recursive --depth 1 https://github.com/roothide/theos.git "$HOME/theos"
           fi
-          # ldid：Theos 签名必需，macOS runner 用 brew 装
           brew install ldid 2>/dev/null || true
           ldid -V 2>/dev/null || true
 
-      # 修改点：使用 update-theos-sdks 并保留手动备用
-      - name: 安装 iOS SDK
+      - name: 安装 iOS SDK（优先使用 14.5 以确保 Preferences 框架存在）
         id: sdk
         env:
-          SDK_INPUT: ${{ inputs.sdk-version }}
+          SDK_INPUT: ${{ inputs.sdk-version || '14.5' }}
         run: |
           set -x
           mkdir -p "$HOME/theos/sdks"
           cd "$HOME/theos/sdks"
           
-          # 如果指定了版本且不存在，尝试下载
-          if [ -n "$SDK_INPUT" ] && [ ! -d "iPhoneOS${SDK_INPUT}.sdk" ]; then
-            echo "尝试下载指定 SDK ${SDK_INPUT}..."
+          # 优先尝试下载用户指定的版本（默认 14.5）
+          TARGET_SDK="iPhoneOS${SDK_INPUT}.sdk"
+          if [ ! -d "$TARGET_SDK" ]; then
+            echo "尝试下载 SDK ${SDK_INPUT} ..."
             for url in \
-              "https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS${SDK_INPUT}.sdk.tar.xz" \
-              "https://github.com/theos/sdks/raw/master/iPhoneOS${SDK_INPUT}.sdk.tar.xz"; do
+              "https://github.com/theos/sdks/releases/download/master-146e41f/${TARGET_SDK}.tar.xz" \
+              "https://github.com/theos/sdks/raw/master/${TARGET_SDK}.tar.xz"; do
               if curl -fsSL "$url" -o /tmp/sdk.tar.xz; then
                 tar -xf /tmp/sdk.tar.xz && rm -f /tmp/sdk.tar.xz
-                echo "成功下载 SDK ${SDK_INPUT}"
+                echo "成功下载 ${TARGET_SDK}"
                 break
               fi
             done
           fi
           
-          # 如果没有任何 SDK，则使用 update-theos-sdks 自动安装（推荐）
-          if [ -z "$(ls -d iPhoneOS*.sdk 2>/dev/null)" ]; then
-            echo "未发现 SDK，使用 update-theos-sdks 自动安装..."
-            "$HOME/theos/bin/update-theos-sdks"
-          fi
-          
-          # 如果还是没有，手动尝试几个常用版本
-          if [ -z "$(ls -d iPhoneOS*.sdk 2>/dev/null)" ]; then
-            for sdk in 16.5 15.2 14.5; do
+          # 若仍未找到，则尝试几个已知包含 Preferences 的版本
+          if [ ! -d "$TARGET_SDK" ]; then
+            echo "指定 SDK 下载失败，尝试 fallback 版本 (14.5, 15.2)"
+            for sdk in 14.5 15.2; do
+              if [ -d "iPhoneOS${sdk}.sdk" ]; then
+                echo "已存在 iPhoneOS${sdk}.sdk"
+                TARGET_SDK="iPhoneOS${sdk}.sdk"
+                break
+              fi
               for url in \
                 "https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS${sdk}.sdk.tar.xz" \
                 "https://github.com/theos/sdks/raw/master/iPhoneOS${sdk}.sdk.tar.xz"; do
                 if curl -fsSL "$url" -o /tmp/sdk.tar.xz; then
                   tar -xf /tmp/sdk.tar.xz && rm -f /tmp/sdk.tar.xz
-                  echo "成功下载 SDK ${sdk}"
+                  TARGET_SDK="iPhoneOS${sdk}.sdk"
+                  echo "成功下载 fallback ${TARGET_SDK}"
                   break 2
                 fi
               done
             done
           fi
           
-          installed=$(ls -1d iPhoneOS*.sdk 2>/dev/null | head -1)
-          if [ -z "$installed" ]; then
+          # 最后尝试 update-theos-sdks（可能下载最新，不一定含私有框架）
+          if [ ! -d "$TARGET_SDK" ]; then
+            echo "所有手动下载失败，尝试 update-theos-sdks ..."
+            "$HOME/theos/bin/update-theos-sdks"
+            # 找到最新下载的 SDK
+            TARGET_SDK=$(ls -1d iPhoneOS*.sdk 2>/dev/null | head -1)
+          fi
+          
+          if [ -z "$TARGET_SDK" ] || [ ! -d "$TARGET_SDK" ]; then
             echo "::error::无法安装任何 iOS SDK"
             exit 1
           fi
           
-          # 设置环境变量供后续步骤使用
-          SDK_PATH="$HOME/theos/sdks/$installed"
+          SDK_PATH="$HOME/theos/sdks/$TARGET_SDK"
           echo "THEOS_SDK_PATH=$SDK_PATH" >> "$GITHUB_ENV"
           echo "SDK_PATH=$SDK_PATH" >> "$GITHUB_OUTPUT"
-          echo "已安装 SDK: $installed (路径: $SDK_PATH)"
+          echo "已安装 SDK: $TARGET_SDK (路径: $SDK_PATH)"
           
-          # 验证 Preferences.framework 是否存在
-          if [ ! -d "$SDK_PATH/System/Library/Frameworks/Preferences.framework" ]; then
-            echo "::error::在 SDK 中未找到 Preferences.framework，请检查 SDK 完整性"
-            ls -la "$SDK_PATH/System/Library/Frameworks/" || true
-            exit 1
+          # 验证 Preferences.framework（私有框架）
+          if [ -d "$SDK_PATH/System/Library/PrivateFrameworks/Preferences.framework" ]; then
+            echo "✅ Preferences.framework 存在"
           else
-            echo "Preferences.framework 存在"
+            echo "::warning::⚠️ 未找到 Preferences.framework，构建可能失败。尝试更换 SDK 版本（如 14.5）"
+            # 列出 PrivateFrameworks 前几项以便调试
+            ls -la "$SDK_PATH/System/Library/PrivateFrameworks/" | head -20 || true
           fi
 
       - name: 构建 deb
@@ -185,7 +190,7 @@ jobs:
           set -x
           echo "make version: $(make --version | head -1)"
           echo "shell: $0 / SHELL=$SHELL"
-          echo "SDKROOT: ${{ env.THEOS_SDK_PATH }}"
+          echo "THEOS_SDK_PATH: ${{ env.THEOS_SDK_PATH }}"
           
           echo "::group::make clean"
           make clean THEOS="$HOME/theos" || true
