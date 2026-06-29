@@ -6,4 +6,5 @@ Description: Dynamic Island style unified music and notification overlay
 Maintainer: DaFei
 Author: DaFei
 Section: Tweaks
+Icon: https://langshiyunyi.github.io/my-repo/icons/dynamicisland-tweak.png
 Depends: mobilesubstrate, preferenceloader, firmware (>= 15.0)
