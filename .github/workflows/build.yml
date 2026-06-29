@@ -155,15 +155,27 @@ jobs:
           EXTRA_FLAGS: ${{ inputs.extra-make-flags }}
         run: |
           set -x
+          echo "make version: $(make --version | head -1)"
+          echo "shell: $0 / SHELL=$SHELL"
           echo "::group::make clean"
           make clean THEOS="$HOME/theos" || true
           echo "::endgroup::"
           echo "::group::make ${{ inputs.make-target || 'package' }}"
+          set +e
           make ${{ inputs.make-target || 'package' }} \
             THEOS="$HOME/theos" \
             THEOS_PACKAGE_SCHEME=${{ matrix.scheme }} \
-            $EXTRA_FLAGS
+            $EXTRA_FLAGS 2>&1 | tee /tmp/build_output.log
+          _status=${PIPESTATUS[0]}
+          set -e
           echo "::endgroup::"
+          if [ "$_status" -ne 0 ]; then
+            echo "::error::make 失败，退出码 $_status"
+            grep -iE "error|fail|no such|not found|make\[|cannot|undefined|missing|fatal|recipe|stop|mismatch|version|No rule" /tmp/build_output.log | tail -25 | while IFS= read -r line; do
+              printf "::error::%s\n" "${line:0:200}"
+            done
+            exit "$_status"
+          fi
 
       - name: 收集产物
         env:
