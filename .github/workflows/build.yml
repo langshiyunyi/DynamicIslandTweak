@@ -16,9 +16,9 @@ on:
           - both
         default: both
       sdk-version:
-        description: 'iOS SDK 版本（推荐 14.5，因为包含 Preferences 私有框架）'
+        description: 'iOS SDK 版本（推荐 14.5）'
         type: string
-        default: '14.5'          # 默认使用 14.5，确保 Preferences.framework 存在
+        default: '14.5'
   workflow_call:
     inputs:
       scheme:
@@ -109,7 +109,7 @@ jobs:
           brew install ldid 2>/dev/null || true
           ldid -V 2>/dev/null || true
 
-      - name: 安装 iOS SDK（优先使用 14.5 以确保 Preferences 框架存在）
+      - name: 安装 iOS SDK（优先使用 14.5）
         id: sdk
         env:
           SDK_INPUT: ${{ inputs.sdk-version || '14.5' }}
@@ -118,7 +118,6 @@ jobs:
           mkdir -p "$HOME/theos/sdks"
           cd "$HOME/theos/sdks"
           
-          # 优先尝试下载用户指定的版本（默认 14.5）
           TARGET_SDK="iPhoneOS${SDK_INPUT}.sdk"
           if [ ! -d "$TARGET_SDK" ]; then
             echo "尝试下载 SDK ${SDK_INPUT} ..."
@@ -133,12 +132,10 @@ jobs:
             done
           fi
           
-          # 若仍未找到，则尝试几个已知包含 Preferences 的版本
           if [ ! -d "$TARGET_SDK" ]; then
             echo "指定 SDK 下载失败，尝试 fallback 版本 (14.5, 15.2)"
             for sdk in 14.5 15.2; do
               if [ -d "iPhoneOS${sdk}.sdk" ]; then
-                echo "已存在 iPhoneOS${sdk}.sdk"
                 TARGET_SDK="iPhoneOS${sdk}.sdk"
                 break
               fi
@@ -155,11 +152,9 @@ jobs:
             done
           fi
           
-          # 最后尝试 update-theos-sdks（可能下载最新，不一定含私有框架）
           if [ ! -d "$TARGET_SDK" ]; then
             echo "所有手动下载失败，尝试 update-theos-sdks ..."
             "$HOME/theos/bin/update-theos-sdks"
-            # 找到最新下载的 SDK
             TARGET_SDK=$(ls -1d iPhoneOS*.sdk 2>/dev/null | head -1)
           fi
           
@@ -173,12 +168,10 @@ jobs:
           echo "SDK_PATH=$SDK_PATH" >> "$GITHUB_OUTPUT"
           echo "已安装 SDK: $TARGET_SDK (路径: $SDK_PATH)"
           
-          # 验证 Preferences.framework（私有框架）
           if [ -d "$SDK_PATH/System/Library/PrivateFrameworks/Preferences.framework" ]; then
             echo "✅ Preferences.framework 存在"
           else
-            echo "::warning::⚠️ 未找到 Preferences.framework，构建可能失败。尝试更换 SDK 版本（如 14.5）"
-            # 列出 PrivateFrameworks 前几项以便调试
+            echo "::warning::⚠️ 未找到 Preferences.framework，构建可能失败"
             ls -la "$SDK_PATH/System/Library/PrivateFrameworks/" | head -20 || true
           fi
 
@@ -198,10 +191,12 @@ jobs:
           
           echo "::group::make ${{ inputs.make-target || 'package' }}"
           set +e
+          # 🔥 关键修改：为 DynamicIslandPrefs 添加 PrivateFrameworks 搜索路径
           make ${{ inputs.make-target || 'package' }} \
             THEOS="$HOME/theos" \
             THEOS_PACKAGE_SCHEME=${{ matrix.scheme }} \
             THEOS_SDK_PATH="${{ env.THEOS_SDK_PATH }}" \
+            DynamicIslandPrefs_LDFLAGS="-F${{ env.THEOS_SDK_PATH }}/System/Library/PrivateFrameworks" \
             $EXTRA_FLAGS 2>&1 | tee /tmp/build_output.log
           _status=${PIPESTATUS[0]}
           set -e
