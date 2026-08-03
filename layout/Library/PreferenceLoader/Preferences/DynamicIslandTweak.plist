@@ -461,6 +461,42 @@
 			<key>showValue</key>
 			<true/>
 		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>DI_FOOTER_ADVANCED</string>
+			<key>label</key>
+			<string>DI_SECTION_ADVANCED</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.dynamicisland.tweak/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.dynamicisland.tweak</string>
+			<key>key</key>
+			<string>useOptionalArtwork</string>
+			<key>label</key>
+			<string>DI_USE_OPTIONAL_ARTWORK</string>
+		</dict>
+		<dict>
+			<key>PostNotification</key>
+			<string>com.dynamicisland.tweak/prefsChanged</string>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.dynamicisland.tweak</string>
+			<key>key</key>
+			<string>verboseLog</string>
+			<key>label</key>
+			<string>DI_VERBOSE_LOG</string>
+		</dict>
 	</array>
 	<key>title</key>
 	<string>DI_PREFS_TITLE</string>

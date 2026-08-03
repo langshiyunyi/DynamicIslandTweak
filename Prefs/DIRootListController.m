@@ -62,6 +62,8 @@ static NSString *DIPrefsLocalizedString(NSString *key) {
         @"borderR":            @255,
         @"borderG":            @255,
         @"borderB":            @255,
+        @"useOptionalArtwork": @NO,
+        @"verboseLog":         @NO,
     };
 }
 

@@ -6,6 +6,10 @@
 "DI_ENABLE_BORDER" = "启用边框";
 "DI_ENABLE_MEDIA" = "启用音乐灵动岛";
 "DI_ENABLE_NOTIFICATION" = "启用通知灵动岛";
+"DI_SECTION_ADVANCED" = "高级";
+"DI_FOOTER_ADVANCED" = "「激进封面 API」会主动请求专辑封面、可提升封面成功率，但依赖私有接口——请在确认真机不卡注销、不崩溃后再开启。详细日志会把诊断信息输出到系统日志。";
+"DI_USE_OPTIONAL_ARTWORK" = "使用激进封面 API（高级）";
+"DI_VERBOSE_LOG" = "详细日志";
 "DI_FOOTER_BEHAVIOR" = "上滑隐藏后，经过此延迟时间灵动岛会自动重新出现";
 "DI_FOOTER_BORDER" = "给灵动岛加一圈彩色描边，方便和黑色背景区分";
 "DI_FOOTER_COMPACT" = "音乐播放时默认显示的小药丸尺寸";

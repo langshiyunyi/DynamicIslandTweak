@@ -22,7 +22,7 @@ make clean && make package THEOS_PACKAGE_SCHEME=roothide
 
 切换 rootless/roothide 必须先 `make clean`。不自动 `make install`、不自动装 deb、不自动 respring。
 
-CI（`.github/workflows/`）走可复用 workflow `langshiyunyi/theos-build@v1`，`scheme: both` 同时产出 rootless + roothide 签名产物；push tag `v*` 触发 Release。
+CI（`.github/workflows/`）：`build.yml` 是自包含 workflow（`macos-latest`，克隆 `roothide/theos`，`brew install ldid`，下载 iOS SDK），也可被 `workflow_call` 复用；`scheme` 支持 `rootless`/`roothide`/`both`（默认 both，矩阵并行）。`release.yml` 调用本地 `./.github/workflows/build.yml`，push tag `v*` / `v*-rc*` 触发，用 `softprops/action-gh-release` 发布所有 `*.deb`。Prefs bundle 构建时 CI 额外注入 `DynamicIslandPrefs_LDFLAGS=-F<SDK>/System/Library/PrivateFrameworks` 以链接私有 `Preferences.framework`。
 
 ## 架构
 
@@ -75,7 +75,7 @@ CI（`.github/workflows/`）走可复用 workflow `langshiyunyi/theos-build@v1`�
 
 ## 本地构建 ABI 问题
 
-在本地 iPhone 上用 Procursus theos 构建的 dylib（`Tweak/` 产物）安装后会触发 SpringBoard watchdog / 卡注销，属本地工具链与运行时 iOS arm64e ABI 不兼容问题（已实测复现，iPhone 13 Pro Max / iOS 15.4.1 / rootless）。**只能通过 GitHub Actions 远端构建**（`macos-latest` + roothide/theos + 16.5/15.2/14.5 SDK fallback）产出可用 deb。因此：
+在本地 iPhone 上用 Procursus theos 构建的 dylib（`Tweak/` 产物）安装后会触发 SpringBoard watchdog / 卡注销，属本地工具链与运行时 iOS arm64e ABI 不兼容问题（已实测复现，iPhone 13 Pro Max / iOS 15.4.1 / rootless）。**只能通过 GitHub Actions 远端构建**（`macos-latest` + roothide/theos + SDK 默认 14.5，fallback 14.5→15.2）产出可用 deb。因此：
 
 - 不要本地 `make install`，也不要安装本地构建的 deb。
 - 下载 Release / CI artifact 的 deb 安装验证。

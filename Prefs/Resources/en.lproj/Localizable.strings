@@ -6,6 +6,10 @@
 "DI_ENABLE_BORDER" = "Enable Border";
 "DI_ENABLE_MEDIA" = "Enable Music Island";
 "DI_ENABLE_NOTIFICATION" = "Enable Notification Island";
+"DI_SECTION_ADVANCED" = "Advanced";
+"DI_FOOTER_ADVANCED" = "The optional-artwork path actively requests album art and can improve reliability, but relies on a private API—enable it only after confirming it does not hang or crash on your device. Verbose logging prints detailed diagnostics to the system log.";
+"DI_USE_OPTIONAL_ARTWORK" = "Use Optional Artwork API (Advanced)";
+"DI_VERBOSE_LOG" = "Verbose Logging";
 "DI_FOOTER_BEHAVIOR" = "After hiding with an upward swipe, the island reappears after this delay.";
 "DI_FOOTER_BORDER" = "Adds a colored outline to separate the island from dark backgrounds.";
 "DI_FOOTER_COMPACT" = "Default small pill size while music is playing.";

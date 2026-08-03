@@ -423,6 +423,39 @@
             <key>showValue</key>
             <true/>
         </dict>
+        <!-- 高级设置 -->
+        <dict>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>label</key>
+            <string>DI_SECTION_ADVANCED</string>
+            <key>footerText</key>
+            <string>DI_FOOTER_ADVANCED</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSSwitchCell</string>
+            <key>default</key>
+            <false/>
+            <key>defaults</key>
+            <string>com.dynamicisland.tweak</string>
+            <key>key</key>
+            <string>useOptionalArtwork</string>
+            <key>label</key>
+            <string>DI_USE_OPTIONAL_ARTWORK</string>
+        </dict>
+        <dict>
+            <key>cell</key>
+            <string>PSSwitchCell</string>
+            <key>default</key>
+            <false/>
+            <key>defaults</key>
+            <string>com.dynamicisland.tweak</string>
+            <key>key</key>
+            <string>verboseLog</string>
+            <key>label</key>
+            <string>DI_VERBOSE_LOG</string>
+        </dict>
         <!-- 保存按钮 -->
         <dict>
             <key>cell</key>

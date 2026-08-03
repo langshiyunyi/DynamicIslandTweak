@@ -3,6 +3,7 @@
 #import <objc/runtime.h>
 #import <Foundation/Foundation.h>
 #import <sys/syslog.h>
+#import <ImageIO/ImageIO.h>
 #import "DIDisplayManager.h"
 #import "DILocalization.h"
 
@@ -17,10 +18,15 @@
     NSLog(@"[Tweak] %@", _diMsg); \
 } while(0)
 
+// 详细日志：仅在 _diVerbose 开启时输出，包住高频 / 调试日志（fetch、符号打印、syncTick）
+#define DIVLog(fmt, ...) do { if (_diVerbose) { DILog(fmt, ##__VA_ARGS__); } } while(0)
+
 typedef void (^MRMediaRemoteGetNowPlayingInfoCompletion)(CFDictionaryRef info);
 typedef void (^MRMediaRemoteGetNowPlayingClientCompletion)(id client);
 typedef void (*MRMediaRemoteRegisterForNowPlayingNotifications_t)(dispatch_queue_t queue);
 typedef void (*MRMediaRemoteGetNowPlayingInfo_t)(dispatch_queue_t queue, MRMediaRemoteGetNowPlayingInfoCompletion completion);
+// 激进路径：主动请求指定尺寸封面（默认关，受 useOptionalArtwork 控制，签名中等把握，@try 包裹）
+typedef void (*MRMediaRemoteGetNowPlayingInfoWithOptionalArtwork_t)(int width, int height, dispatch_queue_t queue, MRMediaRemoteGetNowPlayingInfoCompletion completion);
 typedef void (*MRMediaRemoteGetNowPlayingClient_t)(dispatch_queue_t queue, MRMediaRemoteGetNowPlayingClientCompletion completion);
 typedef NSString *(*MRNowPlayingClientGetBundleIdentifier_t)(id client);
 typedef NSString *(*MRNowPlayingClientGetParentAppBundleIdentifier_t)(id client);
@@ -38,6 +44,7 @@ static void startAfterInjection(void);
 static void *_mrHandle = NULL;
 static MRMediaRemoteRegisterForNowPlayingNotifications_t _MRRegister = NULL;
 static MRMediaRemoteGetNowPlayingInfo_t _MRGetNowPlaying = NULL;
+static MRMediaRemoteGetNowPlayingInfoWithOptionalArtwork_t _MRGetNowPlayingWithOptionalArtwork = NULL;
 static MRMediaRemoteGetNowPlayingClient_t _MRGetNowPlayingClient = NULL;
 static MRNowPlayingClientGetBundleIdentifier_t _MRClientGetBundleID = NULL;
 static MRNowPlayingClientGetParentAppBundleIdentifier_t _MRClientGetParentBundleID = NULL;
@@ -57,6 +64,21 @@ static BOOL _didScheduleTweakInitialization = NO;
 static BOOL _didRegisterPrefsObserver = NO;
 static BOOL _didInitializeNotificationHooks = NO;
 
+// 日志开关：DEBUG 默认开，Release 默认关，由 prefs verboseLog 覆盖
+#ifdef DEBUG
+static BOOL _diVerbose = YES;
+#else
+static BOOL _diVerbose = NO;
+#endif
+// 激进封面路径开关（prefs useOptionalArtwork，默认 NO）
+static BOOL _useOptionalArtwork = NO;
+// 切歌一致性校验：曲目变化时 +1，异步封面回来比对，不一致丢弃避免旧图覆盖新曲
+static int _artworkGeneration = 0;
+// 封面失败重试计数（曲目变化时重置，最多 2 次）
+static int _artworkRetryCount = 0;
+// 上一次曲目标识（title\artist），用于检测切歌
+static NSString *_lastTrackKey = nil;
+
 static NSString *safeString(id value) {
     return [value isKindOfClass:[NSString class]] ? value : nil;
 }
@@ -71,6 +93,69 @@ static BOOL notificationEnabledFromPrefs(void) {
     NSUserDefaults *prefs = [[NSUserDefaults alloc] initWithSuiteName:@"com.dynamicisland.tweak"];
     id value = [prefs objectForKey:@"notificationEnabled"];
     return value ? [prefs boolForKey:@"notificationEnabled"] : NO;
+}
+
+// 读取 tweak 层开关（日志详细度、激进封面路径）；键缺省时保留编译期默认
+static void reloadTweakPrefs(void) {
+    NSUserDefaults *prefs = [[NSUserDefaults alloc] initWithSuiteName:@"com.dynamicisland.tweak"];
+    id vLog = [prefs objectForKey:@"verboseLog"];
+    if (vLog) {
+        _diVerbose = [prefs boolForKey:@"verboseLog"];
+    }
+    _useOptionalArtwork = [prefs boolForKey:@"useOptionalArtwork"];
+}
+
+// 用 ImageIO 生成缩略图解码，避免全尺寸解码大封面；超大图自动缩到 maxPx
+static UIImage *downsampledImage(NSData *data, CGFloat maxPx) {
+    if (![data isKindOfClass:[NSData class]] || data.length == 0) return nil;
+    UIImage *result = nil;
+    @autoreleasepool {
+        CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
+        if (src) {
+            NSDictionary *opts = @{
+                (id)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+                (id)kCGImageSourceCreateThumbnailWithTransform: @YES,
+                (id)kCGImageSourceShouldCacheImmediately: @YES,
+                (id)kCGImageSourceThumbnailMaxPixelSize: @(maxPx),
+            };
+            CGImageRef thumb = CGImageSourceCreateThumbnailAtIndex(src, 0, (__bridge CFDictionaryRef)opts);
+            if (thumb) {
+                result = [UIImage imageWithCGImage:thumb];
+                CGImageRelease(thumb);
+            }
+            CFRelease(src);
+        }
+        // ImageIO 失败兜底：直接解码
+        if (!result) {
+            result = [UIImage imageWithData:data];
+        }
+    }
+    return result;
+}
+
+// App 图标兜底：运行时探测私有 +[UIImage _applicationIconImageForBundleIdentifier:format:scale:]，失败降级 nil
+static UIImage *artworkForBundleID(NSString *bundleID) {
+    if (bundleID.length == 0) return nil;
+    @try {
+        SEL sel = NSSelectorFromString(@"_applicationIconImageForBundleIdentifier:format:scale:");
+        if (![UIImage respondsToSelector:sel]) return nil;
+        NSMethodSignature *sig = [UIImage methodSignatureForSelector:sel];
+        if (!sig) return nil;
+        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+        [inv setTarget:[UIImage class]];
+        [inv setSelector:sel];
+        int format = 2; // 大图
+        CGFloat scale = [UIScreen mainScreen].scale;
+        [inv setArgument:&bundleID atIndex:2];
+        [inv setArgument:&format atIndex:3];
+        [inv setArgument:&scale atIndex:4];
+        [inv invoke];
+        UIImage *__unsafe_unretained tmp = nil;
+        [inv getReturnValue:&tmp];
+        return tmp;
+    } @catch (__unused NSException *e) {
+        return nil;
+    }
 }
 
 static void runOnMainQueue(dispatch_block_t block) {
@@ -92,16 +177,17 @@ static BOOL loadMediaRemote(void) {
         return cached;
     }
 
-    DILog(@"loadMediaRemote: dlopen MediaRemote...");
+    DIVLog(@"loadMediaRemote: dlopen MediaRemote...");
     _mrHandle = dlopen("/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote", RTLD_LAZY | RTLD_LOCAL);
     if (!_mrHandle) {
         DILog(@"loadMediaRemote: dlopen FAILED: %s", dlerror());
         return NO;
     }
-    DILog(@"loadMediaRemote: dlopen ok, handle=%p", _mrHandle);
+    DIVLog(@"loadMediaRemote: dlopen ok, handle=%p", _mrHandle);
 
     _MRRegister = dlsym(_mrHandle, "MRMediaRemoteRegisterForNowPlayingNotifications");
     _MRGetNowPlaying = dlsym(_mrHandle, "MRMediaRemoteGetNowPlayingInfo");
+    _MRGetNowPlayingWithOptionalArtwork = dlsym(_mrHandle, "MRMediaRemoteGetNowPlayingInfoWithOptionalArtwork");
     _MRGetNowPlayingClient = dlsym(_mrHandle, "MRMediaRemoteGetNowPlayingClient");
     _MRClientGetBundleID = dlsym(_mrHandle, "MRNowPlayingClientGetBundleIdentifier");
     _MRClientGetParentBundleID = dlsym(_mrHandle, "MRNowPlayingClientGetParentAppBundleIdentifier");
@@ -118,10 +204,10 @@ static BOOL loadMediaRemote(void) {
     CFStringRef *elapsedPtr = dlsym(_mrHandle, "kMRMediaRemoteNowPlayingInfoElapsedTime");
     CFStringRef *durationPtr = dlsym(_mrHandle, "kMRMediaRemoteNowPlayingInfoDuration");
 
-    DILog(@"sym ptrs: title=%p artist=%p rate=%p artwork=%p artworkURL=%p bundle=%p playingChange=%p infoChange=%p elapsed=%p duration=%p",
+    DIVLog(@"sym ptrs: title=%p artist=%p rate=%p artwork=%p artworkURL=%p bundle=%p playingChange=%p infoChange=%p elapsed=%p duration=%p",
         titlePtr, artistPtr, ratePtr, artworkPtr, artworkURLPtr, bundlePtr, playingChangePtr, infoChangePtr, elapsedPtr, durationPtr);
-    DILog(@"sym funcs: register=%p get=%p getClient=%p getBundleID=%p getParentBundleID=%p",
-        _MRRegister, _MRGetNowPlaying, _MRGetNowPlayingClient, _MRClientGetBundleID, _MRClientGetParentBundleID);
+    DIVLog(@"sym funcs: register=%p get=%p getOptional=%p getClient=%p getBundleID=%p getParentBundleID=%p",
+        _MRRegister, _MRGetNowPlaying, _MRGetNowPlayingWithOptionalArtwork, _MRGetNowPlayingClient, _MRClientGetBundleID, _MRClientGetParentBundleID);
 
     if (titlePtr) _kInfoTitle = (__bridge NSString *)*titlePtr;
     if (artistPtr) _kInfoArtist = (__bridge NSString *)*artistPtr;
@@ -135,7 +221,7 @@ static BOOL loadMediaRemote(void) {
     if (durationPtr) _kInfoDuration = (__bridge NSString *)*durationPtr;
 
     BOOL ok = (_MRRegister && _MRGetNowPlaying && _kInfoTitle && _kInfoDidChange);
-    DILog(@"loadMediaRemote result: ok=%d, _kInfoArtworkData=%@, _kInfoArtworkURL=%@, _kInfoBundleID=%@", ok, _kInfoArtworkData, _kInfoArtworkURL, _kInfoBundleID);
+    DIVLog(@"loadMediaRemote result: ok=%d, _kInfoArtworkData=%@, _kInfoArtworkURL=%@, _kInfoBundleID=%@", ok, _kInfoArtworkData, _kInfoArtworkURL, _kInfoBundleID);
     return ok;
 }
 
@@ -147,7 +233,9 @@ static void updateSyncTimer(BOOL playing) {
     }
     if (playing) {
         if (!_syncTimer) {
-            _syncTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(__unused NSTimer *timer) {
+            // 5s 仅做漂移校准；进度平滑由 DIContentView 的 progressStep(CADisplayLink) 本地推进
+            // 大幅降低跨进程调用 + 大 dict(含 artworkData) 拷贝频率
+            _syncTimer = [NSTimer scheduledTimerWithTimeInterval:5.0 repeats:YES block:^(__unused NSTimer *timer) {
                 syncTick();
             }];
         }
@@ -161,14 +249,14 @@ static void fetchNowPlayingInfo(void) {
     if (!tweakEnabledFromPrefs()) return;
     if (!_MRGetNowPlaying || !_kInfoTitle) return;
 
-    _MRGetNowPlaying(dispatch_get_main_queue(), ^(CFDictionaryRef info) {
+    MRMediaRemoteGetNowPlayingInfoCompletion completion = ^(CFDictionaryRef info) {
         if (!info) {
-            DILog(@"fetchNowPlayingInfo: info=nil");
+            DIVLog(@"fetchNowPlayingInfo: info=nil");
             return;
         }
         NSDictionary *dict = (__bridge NSDictionary *)info;
         if (![dict isKindOfClass:[NSDictionary class]]) {
-            DILog(@"fetchNowPlayingInfo: dict wrong class");
+            DIVLog(@"fetchNowPlayingInfo: dict wrong class");
             return;
         }
 
@@ -178,19 +266,27 @@ static void fetchNowPlayingInfo(void) {
         NSNumber *rate = [rateValue isKindOfClass:[NSNumber class]] ? rateValue : nil;
         BOOL playing = rate.floatValue > 0;
 
+        // 切歌检测：title\artist 变化则 +generation、重置重试计数
+        NSString *trackKey = [NSString stringWithFormat:@"%@\n%@", title ?: @"", artist ?: @""];
+        if (![trackKey isEqualToString:_lastTrackKey]) {
+            _lastTrackKey = trackKey;
+            _artworkGeneration++;
+            _artworkRetryCount = 0;
+        }
+        int gen = _artworkGeneration;
+
+        // 优先级 1：artworkData（downsample，去掉 5MB 硬丢弃，超大自动缩）
         UIImage *artwork = nil;
         NSData *artData = dictionaryValue(dict, _kInfoArtworkData);
         NSUInteger artLen = ([artData isKindOfClass:[NSData class]]) ? [artData length] : 0;
-        if ([artData isKindOfClass:[NSData class]] && artData.length > 0 && artData.length < 5 * 1024 * 1024) {
-            @autoreleasepool {
-                artwork = [UIImage imageWithData:artData];
-            }
-            DILog(@"fetchNowPlayingInfo: title=%@ artist=%@ playing=%d | artData len=%lu image=%@ size=%@",
+        if ([artData isKindOfClass:[NSData class]] && artData.length > 0) {
+            artwork = downsampledImage(artData, 600);
+            DIVLog(@"fetchNowPlayingInfo: title=%@ artist=%@ playing=%d | artData len=%lu image=%@ size=%@",
                 title, artist, playing, (unsigned long)artLen, artwork, artwork ? NSStringFromCGSize(artwork.size) : @"(nil)");
         } else {
-            DILog(@"fetchNowPlayingInfo: title=%@ artist=%@ playing=%d | artData unavailable (key=%@ dataClass=%@ len=%lu)",
+            DIVLog(@"fetchNowPlayingInfo: title=%@ artist=%@ playing=%d | artData unavailable (key=%@ dataClass=%@ len=%lu)",
                 title, artist, playing, _kInfoArtworkData, [artData class], (unsigned long)artLen);
-            // artData 为空，尝试 artworkURL fallback
+            // 优先级 2：artworkURL 异步下载（downsample），gen 校验后再更新
             if (_kInfoArtworkURL) {
                 id artworkURLValue = dictionaryValue(dict, _kInfoArtworkURL);
                 NSURL *artworkURL = nil;
@@ -200,30 +296,30 @@ static void fetchNowPlayingInfo(void) {
                     artworkURL = [NSURL URLWithString:artworkURLValue];
                 }
                 if (artworkURL) {
-                    DILog(@"fetchNowPlayingInfo: trying artworkURL=%@", artworkURL);
+                    DIVLog(@"fetchNowPlayingInfo: trying artworkURL=%@", artworkURL);
                     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
                         @autoreleasepool {
                             NSData *urlData = [NSData dataWithContentsOfURL:artworkURL];
+                            UIImage *urlImage = downsampledImage(urlData, 600);
                             NSUInteger urlLen = (urlData && [urlData isKindOfClass:[NSData class]]) ? [urlData length] : 0;
-                            UIImage *urlImage = nil;
-                            if (urlLen > 0 && urlLen < 5 * 1024 * 1024) {
-                                urlImage = [UIImage imageWithData:urlData];
-                            }
-                            DILog(@"artworkURL download: dataLen=%lu image=%@ size=%@",
+                            DIVLog(@"artworkURL download: dataLen=%lu image=%@ size=%@",
                                 (unsigned long)urlLen, urlImage, urlImage ? NSStringFromCGSize(urlImage.size) : @"(nil)");
                             if (urlImage) {
                                 dispatch_async(dispatch_get_main_queue(), ^{
+                                    if (gen != _artworkGeneration) return; // 已切歌，丢弃旧封面
                                     [[DIDisplayManager sharedInstance] updateMediaArtwork:urlImage];
                                 });
                             }
                         }
                     });
                 } else {
-                    DILog(@"fetchNowPlayingInfo: artworkURL value missing/invalid (key=%@ valueClass=%@)",
+                    DIVLog(@"fetchNowPlayingInfo: artworkURL value missing/invalid (key=%@ valueClass=%@)",
                         _kInfoArtworkURL, [artworkURLValue class]);
                 }
             }
         }
+
+        BOOL hasRealArtwork = (artwork != nil);
 
         __block NSString *bundleID = safeString(dictionaryValue(dict, _kInfoBundleID));
         NSTimeInterval elapsed = 0;
@@ -237,12 +333,32 @@ static void fetchNowPlayingInfo(void) {
         if ([rateNumber isKindOfClass:[NSNumber class]]) playbackRate = rateNumber.doubleValue > 0 ? rateNumber.doubleValue : 1.0;
 
         void (^deliver)(NSString *) = ^(NSString *resolvedBundleID) {
+            // 优先级 3：App 图标兜底，保证弱机 / 首拉失败不空白
+            UIImage *finalArtwork = artwork;
+            if (!finalArtwork) {
+                UIImage *appIcon = artworkForBundleID(resolvedBundleID);
+                if (appIcon) {
+                    finalArtwork = appIcon;
+                    DIVLog(@"fetchNowPlayingInfo: fallback to app icon for bundleID=%@", resolvedBundleID);
+                }
+            }
             if (title.length > 0 || artist.length > 0) {
                 DIDisplayManager *manager = [DIDisplayManager sharedInstance];
-                [manager showMediaWithTitle:title artist:artist playing:playing artwork:artwork bundleID:resolvedBundleID];
+                [manager showMediaWithTitle:title artist:artist playing:playing artwork:finalArtwork bundleID:resolvedBundleID];
                 [manager updateElapsed:elapsed duration:duration playbackRate:playbackRate];
             }
             updateSyncTimer(playing);
+
+            // 失败重试：无真实封面（仅 App 图标或无图）时延迟重拉，最多 2 次，gen 变化则放弃
+            if (!hasRealArtwork && playing && (title.length > 0 || artist.length > 0) && _artworkRetryCount < 2) {
+                int genAtSchedule = gen;
+                _artworkRetryCount++;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    if (genAtSchedule != _artworkGeneration) return; // 已切歌
+                    DIVLog(@"artwork retry #%d for gen=%d", _artworkRetryCount, genAtSchedule);
+                    fetchNowPlayingInfo();
+                });
+            }
         };
 
         if (!bundleID && _MRGetNowPlayingClient && (_MRClientGetBundleID || _MRClientGetParentBundleID)) {
@@ -255,7 +371,18 @@ static void fetchNowPlayingInfo(void) {
         } else {
             deliver(bundleID);
         }
-    });
+    };
+
+    // 激进路径：默认关。仅当 prefs 开启且符号存在时，主动请求 300x300 封面替代标准 API
+    if (_useOptionalArtwork && _MRGetNowPlayingWithOptionalArtwork) {
+        @try {
+            _MRGetNowPlayingWithOptionalArtwork(300, 300, dispatch_get_main_queue(), completion);
+            return;
+        } @catch (NSException *e) {
+            DILog(@"optionalArtwork exception, fallback to standard: %@", e);
+        }
+    }
+    _MRGetNowPlaying(dispatch_get_main_queue(), completion);
 }
 
 static void syncTick(void) {
@@ -282,6 +409,7 @@ static void syncTick(void) {
 
 static void prefsChanged(__unused CFNotificationCenterRef center, __unused void *observer, __unused CFStringRef name, __unused const void *object, __unused CFDictionaryRef userInfo) {
     runOnMainQueue(^{
+        reloadTweakPrefs();
         DIDisplayManager *manager = [DIDisplayManager sharedInstance];
         [manager reloadPrefs];
         if (notificationEnabledFromPrefs()) {
@@ -517,6 +645,7 @@ static void startAfterInjection(void) {
         DIRawLog("UIApplicationDidFinishLaunching received");
         DILog(@"UIApplicationDidFinishLaunching received");
         @try {
+            reloadTweakPrefs();
             registerPrefsObserverIfNeeded();
             BOOL islandOn = tweakEnabledFromPrefs();
             BOOL notifOn = notificationEnabledFromPrefs();
@@ -545,6 +674,7 @@ static void startAfterInjection(void) {
             DIRawLog("launch notification fallback triggered");
             DILog(@"launch notification fallback triggered");
             @try {
+                reloadTweakPrefs();
                 registerPrefsObserverIfNeeded();
                 BOOL islandOn = tweakEnabledFromPrefs();
                 BOOL notifOn = notificationEnabledFromPrefs();
