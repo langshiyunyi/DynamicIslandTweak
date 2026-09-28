@@ -40,11 +40,7 @@
             <string>DI_MUSIC_ISLAND</string>
             <key>detail</key>
             <string>PSListController</string>
-            <key>bundle</key>
-            <string>DynamicIslandPrefs</string>
-            <key>isController</key>
-            <true/>
-            <key>plist</key>
+            <key>file</key>
             <string>MusicIsland</string>
         </dict>
 
@@ -56,11 +52,7 @@
             <string>DI_NOTIFICATION_ISLAND</string>
             <key>detail</key>
             <string>PSListController</string>
-            <key>bundle</key>
-            <string>DynamicIslandPrefs</string>
-            <key>isController</key>
-            <true/>
-            <key>plist</key>
+            <key>file</key>
             <string>NotificationIsland</string>
         </dict>
 
@@ -72,11 +64,7 @@
             <string>DI_OTHER_SETTINGS</string>
             <key>detail</key>
             <string>PSListController</string>
-            <key>bundle</key>
-            <string>DynamicIslandPrefs</string>
-            <key>isController</key>
-            <true/>
-            <key>plist</key>
+            <key>file</key>
             <string>OtherSettings</string>
         </dict>
 
