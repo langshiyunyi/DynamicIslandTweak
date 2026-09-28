@@ -2,87 +2,149 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## 项目概述
+## Project Overview
 
-DynamicIslandTweak：在越狱 iOS（iOS 15+）的 SpringBoard 上叠加一个 Dynamic Island 风格的悬浮窗，统一展示「正在播放」音乐和通知横幅。仅注入 `com.apple.springboard`（见 `Tweak/DynamicIslandTweak.plist`）。包名 `com.dynamicisland.tweak`，作者 `DaFei`，默认 rootless，CI 兼容 roothide。
+DynamicIslandTweak is an iOS jailbreak tweak that overlays a Dynamic Island-style floating window on SpringBoard to display "Now Playing" music controls and notification banners. It only injects into `com.apple.springboard`.
 
-## 构建命令
+**Compatibility:**
+- iOS 15.0+ only (depends on iOS 15+ private APIs that don't exist on iOS 14 and below)
+- rootless and roothide jailbreak types supported
+- arm64 and arm64e architectures
 
-环境：`THEOS=/var/jb/var/mobile/theos`，`ARCHS=arm64 arm64e`，`TARGET=iphone:clang:latest:15.0`，`THEOS_PACKAGE_SCHEME=rootless`。
+## Build Commands
 
-```sh
-# 一次构建全部（tweak dylib + prefs bundle + layout 资源 → deb）
-make clean && make package
+**⚠️ Local builds are NOT supported.** Local iPhone builds with Procursus theos trigger SpringBoard watchdog crashes due to arm64e ABI incompatibilities. **Must use GitHub Actions for remote builds.**
 
-# roothide 变体（必须先 clean）
-make clean && make package THEOS_PACKAGE_SCHEME=roothide
+```bash
+# Build via GitHub Actions (required)
+git push  # triggers .github/workflows/build.yml
+
+# For local reference only (DO NOT install locally):
+make clean && make package                                    # rootless (default)
+make clean && make package THEOS_PACKAGE_SCHEME=roothide     # roothide
 ```
 
-顶层 `Makefile` 用 `SUBPROJECTS = Tweak Prefs`，`make package` 一次构建全部：`Tweak/` 产出 dylib + 注入 plist，`Prefs/` 产出 `DynamicIslandPrefs.bundle`，`layout/` 资源一并打包。偏好 bundle 安装到 `/Library/PreferenceBundles/DynamicIslandPrefs.bundle`。
+The top-level Makefile uses `SUBPROJECTS = Tweak Prefs` to build both the tweak dylib and preferences bundle in one pass.
 
-切换 rootless/roothide 必须先 `make clean`。不自动 `make install`、不自动装 deb、不自动 respring。
+## Architecture
 
-CI（`.github/workflows/`）：`build.yml` 是自包含 workflow（`macos-latest`，克隆 `roothide/theos`，`brew install ldid`，下载 iOS SDK），也可被 `workflow_call` 复用；`scheme` 支持 `rootless`/`roothide`/`both`（默认 both，矩阵并行）。`release.yml` 调用本地 `./.github/workflows/build.yml`，push tag `v*` / `v*-rc*` 触发，用 `softprops/action-gh-release` 发布所有 `*.deb`。Prefs bundle 构建时 CI 额外注入 `DynamicIslandPrefs_LDFLAGS=-F<SDK>/System/Library/PrivateFrameworks` 以链接私有 `Preferences.framework`。
+### Data Flow
+```
+Tweak.x (Logos entry, MediaRemote + notification hooks)
+  ↓
+DIDisplayManager (singleton: state machine / priority / timers)
+  ↓
+DIWindow (top-level window at UIWindowLevelStatusBar + 100, hit-test passthrough)
+  ↓
+DIContentView (state machine UI: Hidden/Compact/Expanded/ExpandedFull × Media/Notification)
+```
 
-## 架构
+### State Machine & Priority
+- **Priority:** Notification > Music. During `showingNotification`, music UI updates are suppressed.
+- **Three timers:** `notificationTimer` (auto-dismiss), `reappearTimer` (re-show after swipe-up), `delayedHideTimer` (batch consecutive notifications)
+- **Media control:** Uses `MRMediaRemoteSendCommand` (play/pause/next/prev) and `MRMediaRemoteSetElapsedTime` (seek)
 
-运行时数据流：`Tweak.x`（MediaRemote 私有框架 + 通知 hook）→ `DIDisplayManager`（状态机/优先级/timer）→ `DIWindow`（顶层窗口）→ `DIContentView`（岛 UI）。所有跨组件协调走 `DIDisplayManager.sharedInstance` 单例。
+### Private API Loading
+- `Tweak.x` uses `dlopen` + `dlsym` to load `MediaRemote.framework` private symbols at runtime
+- Notification content fields (`title`, `message`, `icon`) are probed with `respondsToSelector` / `performSelector` and gracefully degrade on failure
+- The `私有头文件/` directory contains reference headers (`NCNotificationShortLookViewController.h`, `NCNotificationRequest+Bulletin.h`, `NCNotificationViewController.h`, `LSApplicationWorkspace.h`) for documentation only — **Tweak.x does NOT `#include` them**
 
-### Tweak.x（Logos 入口）
-- `%ctor` 只调 `startAfterInjection`，**不在 ctor 里 dispatch 到主线程**；改为监听 `UIApplicationDidFinishLaunchingNotification` 再初始化，30 秒兜底 fallback。
-- 音乐数据：`dlopen` `MediaRemote.framework`，运行时 `dlsym` 全部符号（`MRMediaRemoteRegisterForNowPlayingNotifications`、`MRMediaRemoteGetNowPlayingInfo`、`MRMediaRemoteGetNowPlayingClient`、`MRNowPlayingClient*BundleIdentifier`、`kMRMediaRemoteNowPlayingInfo*` 键）。监听 `kMRMediaRemoteNowPlayingInfoDidChangeNotification` 与 `kMRMediaRemoteNowPlayingApplicationIsPlayingDidChangeNotification`。
-- 通知 hook：`%group NotificationHooks` hook `NCNotificationShortLookViewController` 的 `viewWillAppear/viewWillDisappear`。`isVCInBannerContext:` 仅在横幅上下文（非锁屏/通知列表）劫持，避免破坏锁屏通知。`extractNotificationContent` 用 `performSelector` 运行时探测 `content` 的 `title/message/header/icon`，失败安全降级。
-- 偏好观察：`CFNotificationCenterAddObserver` 监听 Darwin 通知 `com.dynamicisland.tweak/prefsChanged`，收到后 `reloadPrefs` 并按需重新初始化。
-- 延迟初始化：`scheduleTweakInitialization` 推迟 15s，`initializeTweakAfterLaunch` 再延迟 3s 加载 MediaRemote、2s 后首次 `fetchNowPlayingInfo`，避免 SpringBoard 启动早期竞争。
-- `syncTick`：播放中每 1s 由 `NSTimer` 触发，刷新进度（elapsed/duration/playbackRate）。
+## Project Structure
 
-### DIDisplayManager
-- 单例 + `DIContentViewDelegate`。持有 `overlayWindow`（`DIWindow`）、`mediaActive`、`showingNotification`、`lastTitle/lastArtist/lastArtwork/lastPlaying/nowPlayingBundleID`。
-- **优先级**：通知 > 音乐。`showingNotification` 期间不更新音乐 UI；通知消失后若 `mediaActive && lastPlaying` 调 `switchToMedia` 切回。
-- Timer 三件套：`notificationTimer`（自定义时长自动隐藏）、`reappearTimer`（上滑隐藏后延迟再现）、`delayedHideTimer`（连续通知防闪烁，0.3s）。
-- 长按展开通知时 `pauseNotificationTimer`/`resumeNotificationTimer` 配对调用。
-- 媒体控制：`dlsym` `MRMediaRemoteSendCommand`（`kMRTogglePlayPause=2 / kMRNextTrack=4 / kMRPreviousTrack=5`）与 `MRMediaRemoteSetElapsedTime`（seek）。
-- 启动 App：`FBSSystemService openApplication:options:withResult:`（私有路径，首选），失败回退到内置 URL Scheme 表（Music/Spotify/网易云/QQ音乐/酷狗/波点/微信/QQ/支付宝/淘宝/Instagram）。
+```
+Tweak/
+├── Tweak.x                     # Logos entry: MediaRemote dlopen, notification hooks, startup timing
+├── DIDisplayManager.m/.h       # Singleton: state machine, priority logic, three timers
+├── DIContentView.m/.h          # UI state machine, animations, gestures (swipe, long-press)
+├── DIWindow.m/.h               # Top-level window with touch passthrough (hitTest returns nil when hidden)
+├── DILocalization.m/.h         # Localization helper
+├── DynamicIslandTweak.plist    # Injection filter (com.apple.springboard only)
+└── Makefile                    # tweak.mk
 
-### DIWindow
-`UIWindowLevelStatusBar + 100`。`hitTest:` 在 `state == DIStateHidden` 或 `alpha < 0.1` 时返回 `nil`，保证不挡背景触摸；只在 contentView 命中区返回命中。监听旋转重布局。
+Prefs/
+├── DIRootListController.m/.h   # PSListController with saveAllPrefs / resetAllPrefs buttons
+├── Resources/
+│   ├── Root.plist              # Preference pane spec
+│   ├── Info.plist
+│   ├── en.lproj/               # English
+│   └── zh-Hans.lproj/          # Simplified Chinese
+└── Makefile                    # bundle.mk, uses Preferences private framework
 
-### DIContentView（最大文件，~47KB）
-状态机：`DIStateHidden/Compact/Expanded/ExpandedFull` × `DIContentTypeMedia/Notification`。
-- 音乐紧凑态：封面 + 跑马灯标题 + 4 条波形动画（`CADisplayLink`）。
-- 音乐展开态（右滑）：上/下一首、播放暂停。
-- 音乐全面板（长按）：大封面 + `UISlider` 进度 + 完整控制。进度用 `playbackRate` + `lastSyncTime` 做计算式真实进度，`CADisplayLink` 驱动。
-- 通知态：标题 + 消息跑马灯 + icon；长按展开全文（暂停自动消失 timer）。
-- 圆角/边框/尺寸/位置全部从 prefs 读，`reloadPrefs` 刷新。
+layout/Library/PreferenceLoader/Preferences/
+├── DynamicIslandTweak.plist    # Inline preference spec (entry + items + PostNotification)
+├── icon.png / @2x / @3x        # Settings entry icon (29x29 / 58x58 / 87x87 PNG)
+├── en.lproj/
+└── zh-Hans.lproj/
+```
 
-### 偏好系统（双轨）
-1. **PreferenceLoader 内联 spec**（`layout/Library/PreferenceLoader/Preferences/DynamicIslandTweak.plist`）：含 `entry` + 完整 `items` + `PostNotification` 键，无需 bundle 即可在「设置」显示完整面板。配套 `icon.png` 与 `en.lproj/zh-Hans.lproj/DynamicIslandTweak.strings`。
-2. **PreferenceBundles bundle**（`Prefs/`，`DIRootListController : PSListController`）：通过 `loadSpecifiersFromPlistName:@"Root"` 加载 `Resources/Root.plist`，额外提供 `saveAllPrefs`（强制写盘 + `CFPreferencesAppSynchronize` + 发 Darwin 通知，解决重启/刷新桌面后参数丢失）和 `resetAllPrefs` 按钮。
+## Key Implementation Details
 
-偏好 suite：`com.dynamicisland.tweak`。键：`islandEnabled`、`notificationEnabled`、`yOffset`、`compactW/H`、`expandedW`、`fullW/H`、`reappearDelay`、`notifDuration`、`mediaCornerRadius`、`notifCornerRadius`、`borderEnabled/Width/R/G/B`。默认值在 `DIRootListController.m defaultValues`。
+### Artwork Handling
+- **Priority 1:** `kMRMediaRemoteNowPlayingInfoArtworkData` — downsampled via ImageIO to 600px max (removes 5MB hard-drop, auto-scales large images)
+- **Priority 2:** `kMRMediaRemoteNowPlayingInfoArtworkURL` — async download with generation checking to prevent stale artwork from overwriting new tracks
+- **Priority 3:** App icon fallback via `+[UIImage _applicationIconImageForBundleIdentifier:format:scale:]` when artwork fails
+- **Retry logic:** Up to 2 retries with 1.5s delay when no real artwork is available; abandoned if track changes (`_artworkGeneration` mismatch)
 
-### 本地化
-`DILocalization.m` 从 `THEOS_PACKAGE_INSTALL_PREFIX /Library/PreferenceLoader/Preferences` 加载 `DynamicIslandTweak.strings`（en + zh-Hans）。tweak 内所有用户可见文案必须走 `DILocalizedString(@"KEY")`，不硬编码。偏好 bundle 走 `[NSBundle bundleForClass:self]` + `Localizable.strings`。新增 UI 文案须同时更新两份 `.strings`。
+### Progress (Fake Progress Mode - Since 2026-09-28)
+- **System elapsed 仅在新曲目时作为起点**，之后完全本地推进（每秒 +1）
+- 拖动进度条后，从拖动位置继续本地计时（`lastSyncTime` 重置）
+- 不再每 5 秒同步系统真实进度，避免进度条"跳跃"
+- `progressStep` 方法固定 `trackElapsed += delta`（忽略 playbackRate）
+- `updateElapsed` 在新曲目时（`fabs(duration - trackDuration) > 1.0`）才更新 `trackElapsed`
 
-### 私有头文件
-`私有头文件/`（中文目录名）存放 `NCNotificationRequest+Bulletin.h`、`NCNotificationShortLookViewController.h`、`NCNotificationViewController.h`、`LSApplicationWorkspace.h` 仅供参考。**Tweak.x 不 `#include` 它们**，而是在文件内用最小化 `@interface` 声明 + `respondsToSelector`/`performSelector` 运行时探测，失败安全降级。
+### Notification Display
+- **优化后的布局（Since 2026-09-28）**：紧凑模式图标 28x28，左边距 10pt，图标与文字间距 8pt
+- 标题和消息垂直居中对齐，总文本高度 `titleH + lineGap + msgH`，从 `(height - totalTextH) / 2` 开始
+- 长消息自动启用跑马灯滚动（marquee）
+- 长按展开为系统横幅大小，支持多行消息显示
 
-## 日志约定
+### Notification Hooks
+- Hook `NCNotificationShortLookViewController` `viewWillAppear` / `viewWillDisappear`
+- Only process banners (verified via `isVCInBannerContext` — checks view/parent hierarchy for "Banner" class names)
+- Hides the original system banner by setting `self.view.hidden = YES; self.view.alpha = 0` (does NOT touch system banner containers to avoid state machine crashes)
+- Delayed hide with 0.3s timer to batch consecutive notifications
 
-- `DILog(fmt, ...)`：`syslog(LOG_NOTICE, "[DynamicIslandTweak] ...")` + `NSLog(@"[Tweak] ...")`，`fmt` 必须是 NSString 字面量（`@"..."`），用 `%s + UTF8String` 拼接避免 C 串/NSString 非法拼接。
-- `DIRawLog(fmt, ...)`：C 层 `syslog`，不依赖 Foundation，dyld 阶段可用（ctor 入口）。
-- 抓取：`idevicesyslog` / `oslog`（现代 iOS `NSLog` 不落盘、`/var/log/syslog` 不存在）。高频 hook（`syncTick`、`fetchNowPlayingInfo`）内禁重 IO。
+### Logging
+- `DILog(fmt, ...)`: `syslog` + `NSLog`, always on
+- `DIVLog(fmt, ...)`: Verbose logs (default OFF in Release, controlled by `verboseLog` pref), wraps high-frequency calls (`syncTick`, `fetchNowPlayingInfo`)
+- `DIRawLog(fmt, ...)`: C-level `syslog`, works in dyld phase
+- Capture logs via `idevicesyslog` or `oslog` (modern iOS doesn't write NSLog to disk; `/var/log/syslog` doesn't exist)
 
-## 本地构建 ABI 问题
+### Preferences
+- Suite name: `com.dynamicisland.tweak`
+- Darwin notification: `com.dynamicisland.tweak/prefsChanged`
+- On notification, `DIDisplayManager` calls `reloadPrefs` and re-initializes if needed
+- The Prefs bundle provides "Save All" and "Restore Defaults" buttons to solve parameter loss after respring or desktop refresh
 
-在本地 iPhone 上用 Procursus theos 构建的 dylib（`Tweak/` 产物）安装后会触发 SpringBoard watchdog / 卡注销，属本地工具链与运行时 iOS arm64e ABI 不兼容问题（已实测复现，iPhone 13 Pro Max / iOS 15.4.1 / rootless）。**只能通过 GitHub Actions 远端构建**（`macos-latest` + roothide/theos + SDK 默认 14.5，fallback 14.5→15.2）产出可用 deb。因此：
+## Localization
 
-- 不要本地 `make install`，也不要安装本地构建的 deb。
-- 下载 Release / CI artifact 的 deb 安装验证。
-- 本地仅做代码编辑与 `git push`，构建验证看 CI。
+All user-facing strings use `DILocalizedString(@"KEY")`. When adding UI text, update all four files:
+- `layout/Library/PreferenceLoader/Preferences/en.lproj/DynamicIslandTweak.strings`
+- `layout/Library/PreferenceLoader/Preferences/zh-Hans.lproj/DynamicIslandTweak.strings`
+- `Prefs/Resources/en.lproj/Localizable.strings`
+- `Prefs/Resources/zh-Hans.lproj/Localizable.strings`
 
-## 调试与回滚
+## GitHub Actions
 
-- 崩溃日志：`/var/mobile/Library/Logs/CrashReporter/`，排查 selector/类型/UI 线程/野指针/路径/签名/entitlements。
-- 工具：`jtool2` / `otool` / `nm` / `ldid`。
-- 回滚：`make clean && make package` 重新打包覆盖安装；偏好「恢复默认值」按钮一键重置。
+- `.github/workflows/build.yml`: Builds both rootless and roothide variants on `macos-latest` with roothide/theos + iOS SDK fallback (14.5 / 15.2 / 16.5)
+- `.github/workflows/release.yml`: Auto-creates GitHub Release when a `v*` tag is pushed
+- **Critical fix:** `DynamicIslandPrefs_LDFLAGS="-F$(THEOS_SDK_PATH)/System/Library/PrivateFrameworks"` is required in CI to link the Preferences private framework
+
+## Common Patterns
+
+### Adding a New Preference
+1. Add the key/default to `DIDisplayManager -reloadPrefs`
+2. Add the UI control to `Prefs/Resources/Root.plist`
+3. Update localization strings in all four `.strings` files
+4. Test Darwin notification delivery: change the pref in Settings and verify `DILog` shows "prefsChanged" fired
+
+### Modifying the State Machine
+- **Media → Notification transition:** Check `showingNotification` flag in `DIDisplayManager` before updating media UI
+- **Notification → Media transition:** Call `hideNotification`, which checks `mediaActive` and auto-transitions back to media if playing
+- All state changes must run on the main queue
+
+### Debugging Startup
+- Tweak waits for `UIApplicationDidFinishLaunchingNotification` before initializing (with 30s fallback)
+- MediaRemote loading happens 3s after launch notification
+- Notification hooks are initialized 15s after launch if `notificationEnabled` is true
+- Check logs for "startAfterInjection begin", "UIApplicationDidFinishLaunching received", "mediaRemoteLoaded=1"

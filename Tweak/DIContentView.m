@@ -716,7 +716,9 @@ static CGFloat _prefBorderB = 1.0;
     self.isSeeking = NO;
     if (self.trackDuration > 0) {
         float position = slider.value * self.trackDuration;
+        // 假进度条模式：更新本地 elapsed，从这个位置继续推进
         self.trackElapsed = (NSTimeInterval)position;
+        self.lastSyncTime = CACurrentMediaTime(); // 重置基准时刻
         [self.delegate contentViewDidRequestSeek:self toPosition:position];
         [self startProgressLink];
     }
@@ -726,17 +728,17 @@ static CGFloat _prefBorderB = 1.0;
     BOOL newTrack = (fabs(duration - self.trackDuration) > 1.0);
     self.trackDuration = duration;
     self.playbackRate = playbackRate > 0 ? playbackRate : 1.0;
-    // 非 seeking 时无条件用系统真实值覆盖，避免本地漂移累积
-    if (!self.isSeeking) {
+
+    // 假进度条模式：仅在新曲目时使用系统的 elapsed 作为起点，之后完全本地推进
+    if (newTrack) {
         self.trackElapsed = elapsed;
         self.lastSyncTime = CACurrentMediaTime();
-    }
-    // 新曲目重置进度条位置
-    if (newTrack) {
         self.progressSlider.value = (duration > 0) ? (float)(elapsed / duration) : 0;
         self.elapsedLabel.text = [self formatTime:elapsed];
         self.remainingLabel.text = [NSString stringWithFormat:@"-%@", [self formatTime:duration - elapsed]];
     }
+    // 非新曲目时：忽略系统 elapsed，完全依赖本地计时器
+
     if (!self.isSeeking && duration > 0 && self.isPlaying) [self startProgressLink];
 }
 
@@ -755,20 +757,26 @@ static CGFloat _prefBorderB = 1.0;
 - (void)progressStep {
     if (self.isSeeking || self.trackDuration <= 0) return;
     if (!self.isPlaying) { [self stopProgressLink]; return; }
-    // 计算式推进：基于真实同步时刻 + playbackRate，变速播放也能正确推进
+
+    // 假进度条模式：每秒 +1，不依赖系统同步
     CFTimeInterval now = CACurrentMediaTime();
     if (self.lastSyncTime <= 0) {
-        // 首次 tick（updateElapsed 尚未调用过）：仅校准基准时刻，不推进
+        // 首次 tick：初始化基准时刻
         self.lastSyncTime = now;
         return;
     }
+
     CFTimeInterval delta = now - self.lastSyncTime;
     self.lastSyncTime = now;
-    self.trackElapsed += delta * self.playbackRate;
+
+    // 固定每秒 +1（忽略 playbackRate，简化为假进度条）
+    self.trackElapsed += delta;
+
     if (self.trackElapsed >= self.trackDuration) {
         self.trackElapsed = self.trackDuration;
         [self stopProgressLink];
     }
+
     self.progressSlider.value = (float)(self.trackElapsed / self.trackDuration);
     self.elapsedLabel.text = [self formatTime:self.trackElapsed];
     self.remainingLabel.text = [NSString stringWithFormat:@"-%@", [self formatTime:self.trackDuration - self.trackElapsed]];
@@ -870,18 +878,25 @@ static CGFloat _prefBorderB = 1.0;
         // 隐藏滚动容器
         self.notifMsgMarqueeContainer.hidden = YES;
     } else {
-        // 紧凑模式
-        CGFloat iconS = 26;
+        // 紧凑模式：优化为居中对齐，类似官方通知横幅
+        CGFloat iconS = 28;
         CGFloat iconY = (b.size.height - iconS) / 2;
-        self.notifIconView.frame = CGRectMake(kPadding + 2, iconY, iconS, iconS);
+        CGFloat leftPad = 10;
+        self.notifIconView.frame = CGRectMake(leftPad, iconY, iconS, iconS);
 
-        CGFloat textX = kPadding + iconS + 10;
-        CGFloat textW = b.size.width - textX - kPadding;
+        CGFloat textX = leftPad + iconS + 8;
+        CGFloat textW = b.size.width - textX - leftPad;
+
+        // 计算标题和消息的总高度，实现垂直居中
         CGFloat titleH = 16, msgH = 14;
-        CGFloat totalH = titleH + msgH + 2;
-        CGFloat textY = (b.size.height - totalH) / 2;
-        self.notifTitleLabel.frame = CGRectMake(textX, textY, textW, titleH);
+        CGFloat lineGap = 2;
+        CGFloat totalTextH = titleH + lineGap + msgH;
+        CGFloat textStartY = (b.size.height - totalTextH) / 2;
+
+        // 标题居中对齐
+        self.notifTitleLabel.frame = CGRectMake(textX, textStartY, textW, titleH);
         self.notifTitleLabel.numberOfLines = 1;
+        self.notifTitleLabel.textAlignment = NSTextAlignmentLeft;
 
         // 检查消息是否需要滚动
         NSString *msg = self.notifMessageLabel.text ?: @"";
@@ -890,13 +905,14 @@ static CGFloat _prefBorderB = 1.0;
             // 使用滚动容器
             self.notifMessageLabel.hidden = YES;
             self.notifMsgMarqueeContainer.hidden = NO;
-            self.notifMsgMarqueeContainer.frame = CGRectMake(textX, textY + titleH + 2, textW, msgH);
+            self.notifMsgMarqueeContainer.frame = CGRectMake(textX, textStartY + titleH + lineGap, textW, msgH);
             [self setupNotifMarqueeWithText:msg containerWidth:textW height:msgH];
         } else {
             self.notifMessageLabel.hidden = NO;
             self.notifMessageLabel.numberOfLines = 1;
             self.notifMessageLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-            self.notifMessageLabel.frame = CGRectMake(textX, textY + titleH + 2, textW, msgH);
+            self.notifMessageLabel.textAlignment = NSTextAlignmentLeft;
+            self.notifMessageLabel.frame = CGRectMake(textX, textStartY + titleH + lineGap, textW, msgH);
             self.notifMsgMarqueeContainer.hidden = YES;
         }
     }
