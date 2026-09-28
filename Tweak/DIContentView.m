@@ -8,7 +8,7 @@ static CGFloat const kArtworkSizeCompact = 26.0;
 static CGFloat const kArtworkSizeFull = 64.0;
 static CGFloat const kPadding = 6.0;
 
-// Defaults
+// Defaults - 音乐岛
 static CGFloat _prefCompactW = 155.0;
 static CGFloat _prefCompactH = 35.0;
 static CGFloat _prefExpandedW = 340.0;
@@ -17,7 +17,21 @@ static CGFloat _prefFullH = 175.0;
 static CGFloat _prefYOffset = 45.0;
 static CGFloat _prefReappearDelay = 1.0;
 static CGFloat _prefMediaCorner = 18.0;
+static NSInteger _prefMarqueeStyle = 0; // 0=平滑, 1=弹跳, 2=波浪
+static CGFloat _prefMarqueeSpeed = 0.5;
+// 通知岛
+static CGFloat _prefNotifCompactW = 340.0;
+static CGFloat _prefNotifCompactH = 43.0;
+static CGFloat _prefNotifExpandedW = 370.0;
+static CGFloat _prefNotifExpandedH = 90.0;
 static CGFloat _prefNotifCorner = 22.0;
+static CGFloat _prefNotifIconSize = 28.0;
+static CGFloat _prefNotifIconLeftPad = 10.0;
+static CGFloat _prefNotifIconCornerRadius = 6.0;
+static CGFloat _prefNotifTextLeftGap = 8.0;
+static CGFloat _prefNotifLineGap = 2.0;
+static NSInteger _prefNotifMarqueeStyle = 0;
+static CGFloat _prefNotifMarqueeSpeed = 0.5;
 // 边框
 static BOOL    _prefBorderEnabled = NO;
 static CGFloat _prefBorderWidth = 1.5;
@@ -256,6 +270,7 @@ static CGFloat _prefBorderB = 1.0;
 
 - (void)reloadPrefs {
     NSDictionary *prefs = [[NSUserDefaults alloc] initWithSuiteName:kPrefsID].dictionaryRepresentation;
+    // 音乐岛尺寸
     if (prefs[@"compactW"]) _prefCompactW = [prefs[@"compactW"] floatValue];
     if (prefs[@"compactH"]) _prefCompactH = [prefs[@"compactH"] floatValue];
     if (prefs[@"expandedW"]) _prefExpandedW = [prefs[@"expandedW"] floatValue];
@@ -264,7 +279,23 @@ static CGFloat _prefBorderB = 1.0;
     if (prefs[@"yOffset"]) _prefYOffset = [prefs[@"yOffset"] floatValue];
     if (prefs[@"reappearDelay"]) _prefReappearDelay = [prefs[@"reappearDelay"] floatValue];
     if (prefs[@"mediaCornerRadius"]) _prefMediaCorner = [prefs[@"mediaCornerRadius"] floatValue];
+    if (prefs[@"marqueeStyle"]) _prefMarqueeStyle = [prefs[@"marqueeStyle"] integerValue];
+    if (prefs[@"marqueeSpeed"]) _prefMarqueeSpeed = [prefs[@"marqueeSpeed"] floatValue];
+
+    // 通知岛参数
+    if (prefs[@"notifCompactW"]) _prefNotifCompactW = [prefs[@"notifCompactW"] floatValue];
+    if (prefs[@"notifCompactH"]) _prefNotifCompactH = [prefs[@"notifCompactH"] floatValue];
+    if (prefs[@"notifExpandedW"]) _prefNotifExpandedW = [prefs[@"notifExpandedW"] floatValue];
+    if (prefs[@"notifExpandedH"]) _prefNotifExpandedH = [prefs[@"notifExpandedH"] floatValue];
     if (prefs[@"notifCornerRadius"]) _prefNotifCorner = [prefs[@"notifCornerRadius"] floatValue];
+    if (prefs[@"notifIconSize"]) _prefNotifIconSize = [prefs[@"notifIconSize"] floatValue];
+    if (prefs[@"notifIconLeftPad"]) _prefNotifIconLeftPad = [prefs[@"notifIconLeftPad"] floatValue];
+    if (prefs[@"notifIconCornerRadius"]) _prefNotifIconCornerRadius = [prefs[@"notifIconCornerRadius"] floatValue];
+    if (prefs[@"notifTextLeftGap"]) _prefNotifTextLeftGap = [prefs[@"notifTextLeftGap"] floatValue];
+    if (prefs[@"notifLineGap"]) _prefNotifLineGap = [prefs[@"notifLineGap"] floatValue];
+    if (prefs[@"notifMarqueeStyle"]) _prefNotifMarqueeStyle = [prefs[@"notifMarqueeStyle"] integerValue];
+    if (prefs[@"notifMarqueeSpeed"]) _prefNotifMarqueeSpeed = [prefs[@"notifMarqueeSpeed"] floatValue];
+
     // 边框
     _prefBorderEnabled = prefs[@"borderEnabled"] ? [prefs[@"borderEnabled"] boolValue] : NO;
     if (prefs[@"borderWidth"]) _prefBorderWidth = [prefs[@"borderWidth"] floatValue];
@@ -275,6 +306,7 @@ static CGFloat _prefBorderB = 1.0;
     // 立即把当前圆角应用到层
     if (self.contentType == DIContentTypeNotification) {
         self.layer.cornerRadius = _prefNotifCorner;
+        self.notifIconView.layer.cornerRadius = _prefNotifIconCornerRadius;
     } else {
         self.layer.cornerRadius = _prefMediaCorner;
     }
@@ -586,13 +618,38 @@ static CGFloat _prefBorderB = 1.0;
     CGFloat textW = self.marqueeLabel.bounds.size.width;
     CGFloat containerW = self.marqueeContainer.bounds.size.width;
     if (textW <= containerW) return;
-    CGFloat gap = 40, speed = 0.5;
+    CGFloat gap = 40;
+    CGFloat speed = _prefMarqueeSpeed;
+
     self.marqueeOffset += speed;
     CGFloat totalW = textW + gap;
     if (self.marqueeOffset >= totalW) self.marqueeOffset = 0;
+
     CGFloat y = self.marqueeLabel.frame.origin.y;
-    self.marqueeLabel.frame = CGRectMake(-self.marqueeOffset, y, textW, self.marqueeLabel.bounds.size.height);
-    self.marqueeLabelCopy.frame = CGRectMake(-self.marqueeOffset + totalW, y, textW, self.marqueeLabel.bounds.size.height);
+    CGFloat x1 = -self.marqueeOffset;
+    CGFloat x2 = x1 + totalW;
+
+    // 根据样式应用不同效果
+    if (_prefMarqueeStyle == 1) {
+        // 弹跳样式：使用 sin 曲线产生上下弹跳
+        CGFloat bounceAmplitude = 3.0; // 弹跳幅度
+        CGFloat progress = self.marqueeOffset / totalW;
+        CGFloat bounceY = y + sin(progress * M_PI * 4) * bounceAmplitude;
+        self.marqueeLabel.frame = CGRectMake(x1, bounceY, textW, self.marqueeLabel.bounds.size.height);
+        self.marqueeLabelCopy.frame = CGRectMake(x2, bounceY, textW, self.marqueeLabel.bounds.size.height);
+    } else if (_prefMarqueeStyle == 2) {
+        // 波浪样式：每个字符独立上下波动（通过整体 transform 模拟）
+        CGFloat waveAmplitude = 2.5;
+        CGFloat waveFrequency = 0.15;
+        CGFloat time = CACurrentMediaTime();
+        CGFloat waveY = y + sin(time * 3.0 + self.marqueeOffset * waveFrequency) * waveAmplitude;
+        self.marqueeLabel.frame = CGRectMake(x1, waveY, textW, self.marqueeLabel.bounds.size.height);
+        self.marqueeLabelCopy.frame = CGRectMake(x2, waveY, textW, self.marqueeLabel.bounds.size.height);
+    } else {
+        // 默认平滑样式
+        self.marqueeLabel.frame = CGRectMake(x1, y, textW, self.marqueeLabel.bounds.size.height);
+        self.marqueeLabelCopy.frame = CGRectMake(x2, y, textW, self.marqueeLabel.bounds.size.height);
+    }
 }
 
 #pragma mark - Wave Animation
@@ -809,8 +866,8 @@ static CGFloat _prefBorderB = 1.0;
     self.notificationContainer.hidden = NO;
 
     CGRect superBounds = self.superview.bounds;
-    CGFloat notifW = _prefExpandedW;
-    CGFloat notifH = _prefCompactH + 8;
+    CGFloat notifW = _prefNotifCompactW;
+    CGFloat notifH = _prefNotifCompactH;
 
     BOOL wasHidden = (self.state == DIStateHidden);
     self.state = DIStateCompact;
@@ -857,9 +914,10 @@ static CGFloat _prefBorderB = 1.0;
 
     if (self.notifExpanded) {
         // 展开模式：系统横幅大小，完整标题+多行消息
-        CGFloat iconS = 32;
+        CGFloat iconS = _prefNotifIconSize * 1.15; // 展开时稍大
         CGFloat pad = 12;
         self.notifIconView.frame = CGRectMake(pad, pad, iconS, iconS);
+        self.notifIconView.layer.cornerRadius = _prefNotifIconCornerRadius;
 
         CGFloat textX = pad + iconS + 10;
         CGFloat textW = b.size.width - textX - pad;
@@ -878,18 +936,19 @@ static CGFloat _prefBorderB = 1.0;
         // 隐藏滚动容器
         self.notifMsgMarqueeContainer.hidden = YES;
     } else {
-        // 紧凑模式：优化为居中对齐，类似官方通知横幅
-        CGFloat iconS = 28;
+        // 紧凑模式：使用自定义参数
+        CGFloat iconS = _prefNotifIconSize;
         CGFloat iconY = (b.size.height - iconS) / 2;
-        CGFloat leftPad = 10;
+        CGFloat leftPad = _prefNotifIconLeftPad;
         self.notifIconView.frame = CGRectMake(leftPad, iconY, iconS, iconS);
+        self.notifIconView.layer.cornerRadius = _prefNotifIconCornerRadius;
 
-        CGFloat textX = leftPad + iconS + 8;
+        CGFloat textX = leftPad + iconS + _prefNotifTextLeftGap;
         CGFloat textW = b.size.width - textX - leftPad;
 
         // 计算标题和消息的总高度，实现垂直居中
         CGFloat titleH = 16, msgH = 14;
-        CGFloat lineGap = 2;
+        CGFloat lineGap = _prefNotifLineGap;
         CGFloat totalTextH = titleH + lineGap + msgH;
         CGFloat textStartY = (b.size.height - totalTextH) / 2;
 
@@ -932,20 +991,20 @@ static CGFloat _prefBorderB = 1.0;
     }
 
     CGFloat screenW = self.superview.bounds.size.width;
-    // 系统横幅大小：宽度接近屏幕宽，高度根据消息内容自适应
-    CGFloat expandedW = screenW - 20;
-    CGFloat expandedH = 90; // 默认高度，足够显示多行
+    CGFloat expandedW = _prefNotifExpandedW;
+    CGFloat expandedH = _prefNotifExpandedH;
 
     // 根据消息内容计算高度
     NSString *msg = self.notifMessageLabel.text ?: @"";
     if (msg.length > 0) {
-        CGFloat textW = expandedW - 32 - 10 - 12 - 12; // icon + gaps + padding
+        CGFloat iconS = _prefNotifIconSize * 1.15;
+        CGFloat textW = expandedW - iconS - 10 - 12 - 12; // icon + gaps + padding
         CGSize msgSize = [msg boundingRectWithSize:CGSizeMake(textW, 200)
                                            options:NSStringDrawingUsesLineFragmentOrigin
                                         attributes:@{NSFontAttributeName: self.notifMessageLabel.font}
                                            context:nil].size;
-        expandedH = MAX(90, 12 + 18 + 4 + msgSize.height + 12);
-        expandedH = MIN(expandedH, 160); // 最大高度限制
+        expandedH = MAX(_prefNotifExpandedH, 12 + 18 + 4 + msgSize.height + 12);
+        expandedH = MIN(expandedH, 200); // 最大高度限制
     }
 
     CGRect targetFrame = CGRectMake((screenW - expandedW) / 2, _prefYOffset, expandedW, expandedH);
@@ -972,8 +1031,8 @@ static CGFloat _prefBorderB = 1.0;
     }
 
     CGFloat screenW = self.superview.bounds.size.width;
-    CGFloat notifW = _prefExpandedW;
-    CGFloat notifH = _prefCompactH + 8;
+    CGFloat notifW = _prefNotifCompactW;
+    CGFloat notifH = _prefNotifCompactH;
     CGRect targetFrame = CGRectMake((screenW - notifW) / 2, _prefYOffset, notifW, notifH);
 
     [UIView animateWithDuration:0.35 delay:0
@@ -1037,13 +1096,38 @@ static CGFloat _prefBorderB = 1.0;
     CGFloat textW = self.notifMsgMarqueeLabel.bounds.size.width;
     CGFloat containerW = self.notifMsgMarqueeContainer.bounds.size.width;
     if (textW <= containerW) return;
-    CGFloat gap = 40, speed = 0.5;
+    CGFloat gap = 40;
+    CGFloat speed = _prefNotifMarqueeSpeed;
+
     self.notifMarqueeOffset += speed;
     CGFloat totalW = textW + gap;
     if (self.notifMarqueeOffset >= totalW) self.notifMarqueeOffset = 0;
+
     CGFloat y = self.notifMsgMarqueeLabel.frame.origin.y;
-    self.notifMsgMarqueeLabel.frame = CGRectMake(-self.notifMarqueeOffset, y, textW, self.notifMsgMarqueeLabel.bounds.size.height);
-    self.notifMsgMarqueeLabelCopy.frame = CGRectMake(-self.notifMarqueeOffset + totalW, y, textW, self.notifMsgMarqueeLabel.bounds.size.height);
+    CGFloat x1 = -self.notifMarqueeOffset;
+    CGFloat x2 = x1 + totalW;
+
+    // 根据样式应用不同效果
+    if (_prefNotifMarqueeStyle == 1) {
+        // 弹跳样式
+        CGFloat bounceAmplitude = 2.5;
+        CGFloat progress = self.notifMarqueeOffset / totalW;
+        CGFloat bounceY = y + sin(progress * M_PI * 4) * bounceAmplitude;
+        self.notifMsgMarqueeLabel.frame = CGRectMake(x1, bounceY, textW, self.notifMsgMarqueeLabel.bounds.size.height);
+        self.notifMsgMarqueeLabelCopy.frame = CGRectMake(x2, bounceY, textW, self.notifMsgMarqueeLabel.bounds.size.height);
+    } else if (_prefNotifMarqueeStyle == 2) {
+        // 波浪样式
+        CGFloat waveAmplitude = 2.0;
+        CGFloat waveFrequency = 0.15;
+        CGFloat time = CACurrentMediaTime();
+        CGFloat waveY = y + sin(time * 3.0 + self.notifMarqueeOffset * waveFrequency) * waveAmplitude;
+        self.notifMsgMarqueeLabel.frame = CGRectMake(x1, waveY, textW, self.notifMsgMarqueeLabel.bounds.size.height);
+        self.notifMsgMarqueeLabelCopy.frame = CGRectMake(x2, waveY, textW, self.notifMsgMarqueeLabel.bounds.size.height);
+    } else {
+        // 默认平滑样式
+        self.notifMsgMarqueeLabel.frame = CGRectMake(x1, y, textW, self.notifMsgMarqueeLabel.bounds.size.height);
+        self.notifMsgMarqueeLabelCopy.frame = CGRectMake(x2, y, textW, self.notifMsgMarqueeLabel.bounds.size.height);
+    }
 }
 
 - (void)hideNotification {
